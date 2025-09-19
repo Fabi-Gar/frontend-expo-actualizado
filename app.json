@@ -1,6 +1,7 @@
 {
   "expo": {
-    "name": "frontend",
+    "name": "App Incendios Forestales",
+    "description": "aplicacion para deteccion temprana de incendios",
     "slug": "frontend",
     "version": "1.0.0",
     "orientation": "portrait",
