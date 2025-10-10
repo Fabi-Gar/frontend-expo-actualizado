@@ -1,245 +1,344 @@
-import { apiAuth } from '../client';
+// services/catalogos.ts
+import { api } from '../client'
 
-// ===== Tipos (UUID en id) =====
-export type Region = {
-  id: string;
-  nombre: string;
-  codigo?: string;
-  creadoEn?: string;
-  actualizadoEn?: string;
-  eliminadoEn?: string | null;
-};
+/* ============================
+ * Tipos base
+ * ============================ */
+export type UUID = string
 
-export type Etiqueta = {
-  id: string;
-  nombre: string;
-  creadoEn?: string;
-  actualizadoEn?: string;
-  eliminadoEn?: string | null;
-};
-
-export type Estado = {
-  id: string;
-  nombre: string;
-  color?: string;
-  creadoEn?: string;
-  actualizadoEn?: string;
-  eliminadoEn?: string | null;
-};
-
-export type Role = {
-  id: string;
-  nombre: string;
-  creadoEn: string;
-  actualizadoEn: string;
-  eliminadoEn?: string | null;
-};
-
-export type RolesPaged = {
-  items: Role[];
-  page: number;
-  limit: number;
-  total: number;
-  hasMore: boolean;
-};
-
-export type RegionsPaged = {
-  items: Region[];
-  page: number;
-  limit: number;
-  total: number;
-  hasMore: boolean;
-};
-
-export type UsersPaged = {
-  items: UserAccount[];
-  page: number;
-  limit: number;
-  total: number;
-  hasMore: boolean;
-};
-
-export type UserAccount = {
-  id: string;
-  nombre: string;
-  correo: string;
-  rol?: Role | null;
-  creadoEn: string;
-  actualizadoEn: string;
-  eliminadoEn?: string | null;
-  activo: boolean;
-};
-
-// ===== Helpers de compatibilidad (respuestas envueltas o directas) =====
-function unwrapRole(data: any): Role {
-  return data?.role ?? data;
-}
-function unwrapRegion(data: any): Region {
-  return data?.region ?? data;
-}
-function unwrapEtiqueta(data: any): Etiqueta {
-  return data?.etiqueta ?? data;
-}
-function unwrapEstado(data: any): Estado {
-  return data?.estado ?? data;
+export type Paginated<T> = {
+  total: number
+  page: number
+  pageSize: number
+  items: T[]
 }
 
-// ===== Regiones (paged + filtros + restore) =====
-export async function listRegiones(opts?: { show?: 'deleted' | 'all'; page?: number; limit?: number; q?: string }): Promise<RegionsPaged> {
-  const params = new URLSearchParams();
-  if (opts?.show) params.set('show', opts.show);
-  if (opts?.page) params.set('page', String(opts.page));
-  if (opts?.limit) params.set('limit', String(opts.limit));
-  if (opts?.q) params.set('q', opts.q);
-  const qs = params.toString() ? `?${params.toString()}` : '';
-  const { data } = await apiAuth.get(`/api/regiones${qs}`);
-  return data as RegionsPaged; // backend: { items, page, limit, total, hasMore }
+export type Opcion = { id: UUID; nombre: string }
+export type Rol = { id: UUID; nombre: string; descripcion?: string | null; creadoEn?: string }
+export type Institucion = { id: UUID; nombre: string; creadoEn?: string }
+export type EstadoIncendio = { id: UUID; codigo: string; nombre: string; color?: string | null; orden?: number }
+export type Departamento = { id: UUID; nombre: string; codigo?: string | null }
+export type Municipio = { id: UUID; nombre: string; departamentoId: UUID }
+
+/* Catálogos de cierre / soporte */
+export type TipoIncendio = Opcion
+export type TipoPropiedad = Opcion
+export type Causa = Opcion
+export type IniciadoJuntoA = Opcion
+export type MedioAereo = Opcion
+export type MedioTerrestre = Opcion
+export type MedioAcuatico = Opcion
+export type Abasto = Opcion
+export type TecnicaExtincion = Opcion
+
+/* ============================
+ * Helpers
+ * ============================ */
+const setQP = (q: URLSearchParams, k: string, v: any) => {
+  if (v === undefined || v === null || v === '') return
+  q.set(k, String(v))
 }
 
-export async function createRegion(payload: { nombre?: string; codigo?: string }) {
-  const { data } = await apiAuth.post('/api/regiones', payload);
-  return data as Region;
+const norm = (r: any): Opcion => ({
+  id:
+    r?.rol_uuid ||
+    r?.institucion_uuid ||
+    r?.departamento_uuid ||
+    r?.municipio_uuid ||
+    r?.tipo_incendio_id ||
+    r?.tipo_propiedad_id ||
+    r?.causa_id ||
+    r?.iniciado_id ||
+    r?.medio_id ||
+    r?.abasto_id ||
+    r?.tecnica_id ||
+    r?.id ||
+    r?.uuid,
+  nombre:
+    r?.nombre ??
+    r?.tipo_propiedad_nombre ??
+    r?.causa_nombre ??
+    r?.iniciado_nombre ??
+    r?.medio_nombre ??
+    r?.abasto_nombre ??
+    r?.tecnica_nombre ??
+    '',
+})
+
+/* ============================
+ * Estados de incendio (catálogo maestro)
+ * Rutas: GET /estados_incendio (+ opcional admin POST/PATCH/DELETE si lo tienes)
+ * ============================ */
+export async function getEstadosIncendio(): Promise<EstadoIncendio[]> {
+  const { data } = await api.get<{ items: any[] }>(`/estados_incendio`)
+  const arr = (data?.items ?? [])
+  return arr.map((r: any) => ({
+    id: r?.estado_incendio_uuid || r?.id || r?.uuid,
+    codigo: r?.codigo,
+    nombre: r?.nombre,
+    color: r?.color ?? null,
+    orden: r?.orden ?? undefined,
+  }))
 }
 
-export async function updateRegion(id: string, payload: { nombre?: string; codigo?: string }) {
-  const { data } = await apiAuth.patch(`/api/regiones/${id}`, payload);
-  return data as Region;
+// (Opcional admin) — si tu back los expone
+export async function createEstadoIncendio(payload: { codigo: string; nombre: string; color?: string | null; orden?: number }) {
+  const { data } = await api.post<any>(`/estados_incendio`, payload)
+  return data
+}
+export async function updateEstadoIncendio(id: UUID, payload: Partial<{ codigo: string; nombre: string; color?: string | null; orden?: number }>) {
+  const { data } = await api.patch<any>(`/estados_incendio/${id}`, payload)
+  return data
+}
+export async function deleteEstadoIncendio(id: UUID) {
+  const { data } = await api.delete<{ ok: boolean }>(`/estados_incendio/${id}`)
+  return data
 }
 
-export async function deleteRegion(id: string) {
-  await apiAuth.delete(`/api/regiones/${id}`);
-  return { ok: true };
+/* ============================
+ * Roles (admin)  /roles
+ * ============================ */
+export async function listRoles(page = 1, pageSize = 100): Promise<Paginated<Rol>> {
+  const q = new URLSearchParams()
+  setQP(q, 'page', page)
+  setQP(q, 'pageSize', pageSize)
+  const { data } = await api.get<Paginated<any>>(`/roles?${q.toString()}`)
+  return {
+    ...data,
+    items: (data.items ?? []).map((r: any) => ({
+      id: r?.rol_uuid || r?.id || r?.uuid,
+      nombre: r?.nombre,
+      descripcion: r?.descripcion ?? null,
+      creadoEn: r?.creado_en ?? r?.creadoEn,
+    })),
+  }
+}
+export async function getRol(id: UUID): Promise<Rol> {
+  const { data } = await api.get<any>(`/roles/${id}`)
+  return {
+    id: data?.rol_uuid || data?.id || data?.uuid,
+    nombre: data?.nombre,
+    descripcion: data?.descripcion ?? null,
+    creadoEn: data?.creado_en ?? data?.creadoEn,
+  }
+}
+export async function createRol(payload: { nombre: string; descripcion?: string | null }) {
+  const { data } = await api.post<any>(`/roles`, payload)
+  return data
+}
+export async function updateRol(id: UUID, payload: Partial<{ nombre: string; descripcion?: string | null }>) {
+  const { data } = await api.patch<any>(`/roles/${id}`, payload)
+  return data
+}
+export async function deleteRol(id: UUID) {
+  const { data } = await api.delete<{ ok: boolean }>(`/roles/${id}`)
+  return data
 }
 
-export async function restoreRegion(id: string) {
-  const { data } = await apiAuth.post(`/api/regiones/${id}/restore`);
-  return unwrapRegion(data);
+/* ============================
+ * Instituciones  /instituciones
+ * ============================ */
+export async function listInstituciones(params?: { page?: number; pageSize?: number; q?: string }): Promise<Paginated<Institucion>> {
+  const q = new URLSearchParams()
+  setQP(q, 'page', params?.page ?? 1)
+  setQP(q, 'pageSize', params?.pageSize ?? 50)
+  setQP(q, 'q', params?.q)
+  const { data } = await api.get<Paginated<any>>(`/instituciones?${q.toString()}`)
+  return {
+    ...data,
+    items: (data.items ?? []).map((r: any) => ({
+      id: r?.institucion_uuid || r?.id || r?.uuid,
+      nombre: r?.nombre,
+      creadoEn: r?.creado_en ?? r?.creadoEn,
+    })),
+  }
+}
+export async function getInstitucion(id: UUID): Promise<Institucion> {
+  const { data } = await api.get<any>(`/instituciones/${id}`)
+  return {
+    id: data?.institucion_uuid || data?.id || data?.uuid,
+    nombre: data?.nombre,
+    creadoEn: data?.creado_en ?? data?.creadoEn,
+  }
+}
+export async function createInstitucion(payload: { nombre: string }) {
+  const { data } = await api.post<any>(`/instituciones`, payload)
+  return data
+}
+export async function updateInstitucion(id: UUID, payload: Partial<{ nombre: string }>) {
+  const { data } = await api.patch<any>(`/instituciones/${id}`, payload)
+  return data
+}
+export async function deleteInstitucion(id: UUID) {
+  const { data } = await api.delete<{ ok: boolean }>(`/instituciones/${id}`)
+  return data
 }
 
-// ===== Etiquetas =====
-export async function listEtiquetas(opts?: { show?: 'deleted' | 'all' }) : Promise<Etiqueta[]> {
-  const q = opts?.show ? `?show=${opts.show}` : '';
-  const { data } = await apiAuth.get(`/api/etiquetas${q}`);
-  return Array.isArray(data) ? (data as Etiqueta[]) : [];
+/* ============================
+ * Departamentos / Municipios
+ *  - /departamentos
+ *  - /departamentos/:id/municipios (GET, POST)
+ *  - /municipios/:id (PATCH/DELETE)
+ * ============================ */
+export async function listDepartamentos(): Promise<Departamento[]> {
+  const { data } = await api.get<{ items: any[] }>(`/departamentos`)
+  return (data?.items ?? []).map((d: any) => ({
+    id: d?.departamento_uuid || d?.id || d?.uuid,
+    nombre: d?.nombre,
+    codigo: d?.codigo ?? null,
+  }))
+}
+export async function createDepartamento(payload: { nombre: string; codigo?: string | null }) {
+  const { data } = await api.post<any>(`/departamentos`, payload)
+  return data
+}
+export async function updateDepartamento(id: UUID, payload: Partial<{ nombre: string; codigo?: string | null }>) {
+  const { data } = await api.patch<any>(`/departamentos/${id}`, payload)
+  return data
+}
+export async function deleteDepartamento(id: UUID) {
+  const { data } = await api.delete<{ ok: boolean }>(`/departamentos/${id}`)
+  return data
 }
 
-export async function createEtiqueta(payload: { nombre?: string }) {
-  const { data } = await apiAuth.post('/api/etiquetas', payload);
-  return data as Etiqueta;
+export async function listMunicipios(departamentoId: UUID): Promise<Municipio[]> {
+  const { data } = await api.get<{ items: any[] }>(`/departamentos/${departamentoId}/municipios`)
+  return (data?.items ?? []).map((m: any) => ({
+    id: m?.municipio_uuid || m?.id || m?.uuid,
+    nombre: m?.nombre,
+    departamentoId,
+  }))
+}
+export async function createMunicipio(departamentoId: UUID, payload: { nombre: string }) {
+  const { data } = await api.post<any>(`/departamentos/${departamentoId}/municipios`, payload)
+  return data
+}
+export async function updateMunicipio(id: UUID, payload: Partial<{ nombre: string; departamentoId?: UUID }>) {
+  // si cambias de departamento, ajusta backend si soporta moverlo
+  const { data } = await api.patch<any>(`/municipios/${id}`, payload)
+  return data
+}
+export async function deleteMunicipio(id: UUID) {
+  const { data } = await api.delete<{ ok: boolean }>(`/municipios/${id}`)
+  return data
 }
 
-export async function updateEtiqueta(id: string, payload: { nombre?: string }) {
-  const { data } = await apiAuth.patch(`/api/etiquetas/${id}`, payload);
-  return data as Etiqueta;
+/* ============================
+ * Catálogos de cierre /catalogos/*
+ * GET + (admin) POST/PATCH/DELETE
+ * ============================ */
+async function getCatalogo(path: string) {
+  const { data } = await api.get<{ items: any[] }>(`/catalogos/${path}`)
+  return (data?.items ?? []).map(norm)
+}
+async function postCatalogo(path: string, payload: { nombre: string }) {
+  const { data } = await api.post<any>(`/catalogos/${path}`, payload)
+  return data
+}
+async function patchCatalogo(path: string, id: UUID, payload: Partial<{ nombre: string }>) {
+  const { data } = await api.patch<any>(`/catalogos/${path}/${id}`, payload)
+  return data
+}
+async function deleteCatalogo(path: string, id: UUID) {
+  const { data } = await api.delete<{ ok: boolean }>(`/catalogos/${path}/${id}`)
+  return data
 }
 
-export async function deleteEtiqueta(id: string) {
-  await apiAuth.delete(`/api/etiquetas/${id}`);
-  return { ok: true };
-}
+/* Tipos de incendio */
+export const getTiposIncendio = () => getCatalogo('tipos_incendio')
+export const createTipoIncendio = (p: { nombre: string }) => postCatalogo('tipos_incendio', p)
+export const updateTipoIncendio = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('tipos_incendio', id, p)
+export const deleteTipoIncendio = (id: UUID) => deleteCatalogo('tipos_incendio', id)
 
-export async function restoreEtiqueta(id: string) {
-  const { data } = await apiAuth.post(`/api/etiquetas/${id}/restore`, {});
-  return unwrapEtiqueta(data);
-}
+/* Tipos de propiedad */
+export const getTiposPropiedad = () => getCatalogo('tipo_propiedad')
+export const createTipoPropiedad = (p: { nombre: string }) => postCatalogo('tipo_propiedad', p)
+export const updateTipoPropiedad = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('tipo_propiedad', id, p)
+export const deleteTipoPropiedad = (id: UUID) => deleteCatalogo('tipo_propiedad', id)
 
-// ===== Estados =====
-export async function listEstados(opts?: { show?: 'deleted' | 'all' }) {
-  const q = opts?.show ? `?show=${opts.show}` : '';
-  const { data } = await apiAuth.get(`/api/estado-incendio${q}`);
-  return Array.isArray(data) ? (data as Estado[]) : [];
-}
+/* Causas */
+export const getCausas = () => getCatalogo('causas')
+export const createCausa = (p: { nombre: string }) => postCatalogo('causas', p)
+export const updateCausa = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('causas', id, p)
+export const deleteCausa = (id: UUID) => deleteCatalogo('causas', id)
 
+/* Iniciado junto a */
+export const getIniciadoJuntoA = () => getCatalogo('iniciado_junto_a')
+export const createIniciadoJuntoA = (p: { nombre: string }) => postCatalogo('iniciado_junto_a', p)
+export const updateIniciadoJuntoA = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('iniciado_junto_a', id, p)
+export const deleteIniciadoJuntoA = (id: UUID) => deleteCatalogo('iniciado_junto_a', id)
 
-export async function createEstado(payload: { nombre: string; color?: string }) {
-  const { data } = await apiAuth.post('/api/estado-incendio', payload);
-  return data as Estado;
-}
+/* Medios aéreos */
+export const getMediosAereos = () => getCatalogo('medios_aereos')
+export const createMedioAereo = (p: { nombre: string }) => postCatalogo('medios_aereos', p)
+export const updateMedioAereo = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('medios_aereos', id, p)
+export const deleteMedioAereo = (id: UUID) => deleteCatalogo('medios_aereos', id)
 
-export async function updateEstado(id: string, payload: { nombre?: string; color?: string }) {
-  const { data } = await apiAuth.patch(`/api/estado-incendio/${id}`, payload);
-  return data as Estado;
-}
+/* Medios terrestres */
+export const getMediosTerrestres = () => getCatalogo('medios_terrestres')
+export const createMedioTerrestre = (p: { nombre: string }) => postCatalogo('medios_terrestres', p)
+export const updateMedioTerrestre = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('medios_terrestres', id, p)
+export const deleteMedioTerrestre = (id: UUID) => deleteCatalogo('medios_terrestres', id)
 
-export async function deleteEstado(id: string) {
-  await apiAuth.delete(`/api/estado-incendio/${id}`);
-  return { ok: true };
-}
+/* Medios acuáticos */
+export const getMediosAcuaticos = () => getCatalogo('medios_acuaticos')
+export const createMedioAcuatico = (p: { nombre: string }) => postCatalogo('medios_acuaticos', p)
+export const updateMedioAcuatico = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('medios_acuaticos', id, p)
+export const deleteMedioAcuatico = (id: UUID) => deleteCatalogo('medios_acuaticos', id)
 
-export async function restoreEstado(id: string) {
-  const { data } = await apiAuth.post(`/api/estado-incendio/${id}/restore`);
-  return unwrapEstado(data);
-}
+/* Abastos */
+export const getAbastos = () => getCatalogo('abastos')
+export const createAbasto = (p: { nombre: string }) => postCatalogo('abastos', p)
+export const updateAbasto = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('abastos', id, p)
+export const deleteAbasto = (id: UUID) => deleteCatalogo('abastos', id)
 
-// ===== Roles =====
-export async function listRoles(opts?: { show?: 'deleted' | 'all'; page?: number; limit?: number; q?: string }): Promise<RolesPaged> {
-  const params = new URLSearchParams();
-  if (opts?.show) params.set('show', opts.show);
-  if (opts?.page) params.set('page', String(opts.page));
-  if (opts?.limit) params.set('limit', String(opts.limit));
-  if (opts?.q) params.set('q', opts.q);
+/* Técnicas de extinción */
+export const getTecnicasExtincion = () => getCatalogo('tecnicas_extincion')
+export const createTecnicaExtincion = (p: { nombre: string }) => postCatalogo('tecnicas_extincion', p)
+export const updateTecnicaExtincion = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('tecnicas_extincion', id, p)
+export const deleteTecnicaExtincion = (id: UUID) => deleteCatalogo('tecnicas_extincion', id)
 
-  const qs = params.toString() ? `?${params.toString()}` : '';
-  const { data } = await apiAuth.get(`/api/roles${qs}`);
-  return data as RolesPaged; // backend: { items, page, limit, total, hasMore }
-}
+/* ============================
+ * Pre-carga en paralelo
+ * ============================ */
+export async function preloadCatalogosBasicos() {
+  const [
+    estados,
+    tiposIncendio,
+    tiposPropiedad,
+    causas,
+    iniciado,
+    mediosAereos,
+    mediosTerrestres,
+    mediosAcuaticos,
+    abastos,
+    tecnicas,
+    departamentos,
+  ] = await Promise.all([
+    getEstadosIncendio(),
+    getTiposIncendio(),
+    getTiposPropiedad(),
+    getCausas(),
+    getIniciadoJuntoA(),
+    getMediosAereos(),
+    getMediosTerrestres(),
+    getMediosAcuaticos(),
+    getAbastos(),
+    getTecnicasExtincion(),
+    listDepartamentos(),
+  ])
 
-export async function createRole(payload: { nombre: string }) {
-  const { data } = await apiAuth.post('/api/roles', payload);
-  return data as Role;
-}
-
-export async function updateRole(id: string, payload: { nombre?: string }) {
-  const { data } = await apiAuth.patch(`/api/roles/${id}`, payload);
-  return data as Role;
-}
-
-export async function deleteRole(id: string) {
-  await apiAuth.delete(`/api/roles/${id}`);
-  return { ok: true };
-}
-
-export async function restoreRole(id: string) {
-  const { data } = await apiAuth.post(`/api/roles/${id}/restore`);
-  return unwrapRole(data);
-}
-
-// ===== Usuarios (id UUID) =====
-export async function listUsers(opts?: { show?: 'deleted' | 'all'; page?: number; limit?: number; q?: string }): Promise<UsersPaged> {
-  const params = new URLSearchParams();
-  if (opts?.show) params.set('show', opts.show);
-  if (opts?.page) params.set('page', String(opts.page));
-  if (opts?.limit) params.set('limit', String(opts.limit));
-  if (opts?.q) params.set('q', opts.q);
-  const qs = params.toString() ? `?${params.toString()}` : '';
-  const { data } = await apiAuth.get(`/api/usuarios${qs}`);
-  return data as UsersPaged;
-}
-
-export async function createUser(payload: { nombre: string; correo: string; password: string; rolId?: string }) {
-  const { data } = await apiAuth.post("/api/usuarios", payload);
-  return data as UserAccount;
-}
-
-export async function updateUser(
-  id: string,
-  payload: { nombre?: string; correo?: string; password?: string; rolId?: string | null; activo?: boolean }
-) {
-  const { data } = await apiAuth.patch(`/api/usuarios/${id}`, payload);
-  return data as UserAccount;
-}
-
-export async function deleteUser(id: string) {
-  await apiAuth.delete(`/api/usuarios/${id}`);
-  return { ok: true };
-}
-
-export async function restoreUser(id: string) {
-  const { data } = await apiAuth.post(`/api/usuarios/${id}/restore`);
-  return data as UserAccount; 
-}
-
-export async function getEstado(id: string) {
-  const { data } = await apiAuth.get(`/api/estado-incendio/${id}`);
-  return data as Estado;
+  return {
+    estados,
+    tiposIncendio,
+    tiposPropiedad,
+    causas,
+    iniciado,
+    mediosAereos,
+    mediosTerrestres,
+    mediosAcuaticos,
+    abastos,
+    tecnicas,
+    departamentos,
+  }
 }

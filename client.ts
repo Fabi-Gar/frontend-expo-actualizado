@@ -1,21 +1,27 @@
-import axios, { AxiosHeaders, InternalAxiosRequestConfig } from 'axios';
-import { getToken } from './session'; 
+// client.ts
+import axios from 'axios'
+import Constants from 'expo-constants'
+import { router } from 'expo-router'
+import { getToken,logout  } from './session'
 
-export const api = axios.create({
-  baseURL: process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3000',
-});
+const baseURL = process.env.EXPO_PUBLIC_API_URL || (Constants?.expoConfig?.extra as any)?.apiUrl || ''
 
-export const apiAuth = axios.create({ baseURL: api.defaults.baseURL });
+export const api = axios.create({ baseURL })
 
-apiAuth.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
-  const token = await getToken();
-  if (token) {
-    if (!config.headers) config.headers = new AxiosHeaders();
-    if (config.headers instanceof AxiosHeaders) {
-      config.headers.set('Authorization', `Bearer ${token}`);
-    } else {
-      (config.headers as any)['Authorization'] = `Bearer ${token}`;
+api.interceptors.request.use(async (config) => {
+  const token = await getToken()
+   console.log('[API REQUEST]', config.url, token ? '✅ Bearer attached' : '🚫 no token')
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+
+api.interceptors.response.use(
+  r => r,
+  async (error) => {
+    if (error?.response?.status === 401) {
+      await logout()
+      router.replace('/login')
     }
+    return Promise.reject(error)
   }
-  return config;
-});
+)

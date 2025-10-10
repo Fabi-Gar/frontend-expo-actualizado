@@ -14,6 +14,15 @@ type Options = {
   /** Autofit una sola vez cuando haya elementos (el contenedor decide) */
 };
 
+const weightByNombre = (nombre?: string) => {
+  if (!nombre) return 0.5;
+  const n = nombre.toUpperCase();
+  if (n.includes('ACTIVO')) return 1.0;
+  if (n.includes('CIERRE')) return 0.7;
+  if (n.includes('FALSA'))  return 0.3;
+  return 0.5;
+};
+
 export function useIncendiosForMap(opts: Options = {}) {
   const {
     onlyPublic = true,
@@ -54,17 +63,17 @@ export function useIncendiosForMap(opts: Options = {}) {
     void reload();
   }, [reload]);
 
-  const heatData: WeightedLatLng[] = useMemo(() => {
-    return (items || [])
-      .map((it) => {
-        const pos = getLatLngFromIncendio(it);
-        if (!pos) return null;
-        const estadoId = Number(it?.estadoActual?.estado?.id);
-        const weight = estadoId === 1 ? 1.0 : estadoId === 2 ? 0.7 : estadoId === 3 ? 0.3 : 0.5;
-        return { latitude: pos.latitude, longitude: pos.longitude, weight };
-      })
-      .filter(Boolean) as WeightedLatLng[];
-  }, [items]);
+const heatData: WeightedLatLng[] = useMemo(() => {
+  return (items || [])
+    .map((it) => {
+      const pos = getLatLngFromIncendio(it);
+      if (!pos) return null;
+      const nombre = it?.estadoActual?.estado?.nombre;
+      const weight = weightByNombre(nombre);
+      return { latitude: pos.latitude, longitude: pos.longitude, weight };
+    })
+    .filter(Boolean) as WeightedLatLng[];
+}, [items]);
 
   return {
     items,              // incendios (filtrados)

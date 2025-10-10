@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   View, StyleSheet, TouchableOpacity, TouchableWithoutFeedback,
-  Animated, Easing, Alert, Modal, FlatList, Platform, Image, Linking, Share, ScrollView
+  Animated, Easing, Modal, FlatList, Platform, Image, Linking, Share, ScrollView
 } from 'react-native';
 import MapView, {
   PROVIDER_GOOGLE,
@@ -19,6 +19,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useFocusEffect } from 'expo-router';
 
+// Componentes auxiliares
 import ImageViewerModal from '@/components/ImageViewerModal';
 import OfflineBanner from '@/components/OfflineBanner';
 import EmptyState from '@/components/EmptyState';
@@ -26,9 +27,11 @@ import { MapTypeDrawer, DRAWER_WIDTH } from '@/components/MapTypeDrawer';
 import { LeyendaDrawer } from '@/components/LeyendaDrawer';
 import { MenuDrawer } from '@/components/MenuDrawer';
 
-import { listEtiquetas, Etiqueta } from '@/services/catalogos';
-import { getUser } from '@/session';
+// Si aún NO tienes estos exports en services/catalogos,
+// deja comentado este import y el bloque que intenta cargar etiquetas
+// import { listEtiquetas, type Etiqueta } from '@/services/catalogos';
 
+import { getUser } from '@/session';
 import { useIncendiosForMap } from '../hooks/useIncendiosForMap';
 import { useFirmsGT } from '../hooks/useFirmsGT';
 import { useMapRegion } from '../hooks/useMapRegion';
@@ -40,9 +43,17 @@ const AS_HEATMAP = 'heatmap';
 const DEFAULT_REGION: Region = {
   latitude: 15.319,
   longitude: -91.472,
-  latitudeDelta: 0.2,
-  longitudeDelta: 0.2,
+  latitudeDelta: 2.2,     // abre un poco más para “ver algo” aunque no haya GPS
+  longitudeDelta: 2.2,
 };
+
+// BBOX Guatemala: [-92.27, 13.74, -88.18, 17.82]
+const GT_BBOX = [
+  { latitude: 13.74, longitude: -92.27 },
+  { latitude: 17.82, longitude: -88.18 },
+];
+
+type Etiqueta = { id: string | number; nombre: string };
 
 export default function Mapa() {
   const insets = useSafeAreaInsets();
@@ -79,7 +90,7 @@ export default function Mapa() {
 
   // ===== Incendios (hook) =====
   const {
-    items,          // ya filtrados por etiqueta si se la pasamos
+    items,
     heatData,
     loading,
     reload
@@ -98,7 +109,7 @@ export default function Mapa() {
     loading: firmsLoading,
     heat: firmsHeat,
     geo: firmsGeo,
-  } = useFirmsGT(); // usa bbox de GT por defecto + cache
+  } = useFirmsGT();
 
   // ===== Persistencia Heatmap (toggle) =====
   useEffect(() => {
@@ -128,16 +139,56 @@ export default function Mapa() {
     return () => sub && sub();
   }, []);
 
-  // ===== Cargar etiquetas =====
+  // ===== Cargar etiquetas (opcional si aún no tienes el endpoint) =====
   useEffect(() => {
     (async () => {
-      try { setAllEtiquetas(await listEtiquetas() || []); } catch {}
+      try {
+        // Si más adelante exportas listEtiquetas() en services/catalogos:
+        // const arr = await listEtiquetas();
+        // setAllEtiquetas(arr || []);
+        setAllEtiquetas([]); // placeholder sin romper la UI
+      } catch {
+        setAllEtiquetas([]);
+      }
     })();
   }, []);
 
   // ===== Cargar/recargar incendios =====
   useEffect(() => { reload(); }, [reload]);
   useFocusEffect(useCallback(() => { reload(); }, [reload]));
+
+  // ===== Depuración: log de items y coordenadas inválidas =====
+  useEffect(() => {
+    if (!items?.length) {
+      console.log('[MAP] No hay incendios (items.length=0)');
+      return;
+    }
+    let invalid = 0;
+    for (const it of items) {
+      const pos = getLatLngFromIncendio(it as any);
+      if (!pos) invalid++;
+    }
+    if (invalid) {
+      console.log(`[MAP] Incendios sin coord válidas: ${invalid}/${items.length}`);
+    } else {
+      console.log(`[MAP] Incendios con coord OK: ${items.length}`);
+    }
+  }, [items]);
+
+useEffect(() => {
+  if (items?.length) {
+    const first: any = items[0]; // 👈 cast
+    const pos = getLatLngFromIncendio(first);
+    console.log('[MAP] first incendio:', {
+      id: first?.id ?? first?.incendio_uuid,
+      latField: first?.lat,
+      lngField: first?.lng,
+      centroide: first?.centroide,   // ya no da error
+      parsed: pos,
+    });
+  }
+}, [items]);
+
 
   // Autofit una sola vez cuando haya datos
   const firstAutoFitDoneRef = useRef(false);
@@ -173,6 +224,7 @@ export default function Mapa() {
     Animated.timing(menuAnim, { toValue: -DRAWER_WIDTH, duration: 300, easing: Easing.in(Easing.ease), useNativeDriver: false }).start(() => setMenuOpen(false));
   };
 
+  // Navegación del menú lateral
   const handleMenuNavigate = (route: string) => {
     if (route === 'Mapa' || route === 'Ayuda' || route === 'Logout') { closeMenu(); return; }
     if (route === 'listaIncendios') { closeMenu(); router.push('/incendios/listaIncendios'); return; }
@@ -215,7 +267,7 @@ export default function Mapa() {
   const renderMarkers = () => (
     <>
       {items.map((item) => {
-        const coord = getLatLngFromIncendio(item);
+        const coord = getLatLngFromIncendio(item as any);
         if (!coord) return null;
         const { latitude: lat, longitude: lng } = coord;
 
@@ -228,7 +280,7 @@ export default function Mapa() {
           <Marker
             key={item.id}
             coordinate={coord}
-            pinColor={getPinColor(item)}
+            pinColor={getPinColor(item as any)}
             tracksViewChanges={false}
             accessibilityLabel={`Incendio ${item.titulo}`}
           >
@@ -257,9 +309,9 @@ export default function Mapa() {
                 </TouchableOpacity>
 
                 <Text>
-                  {typeof item.region === 'object' && item.region !== null ? item.region.nombre : 'Sin región'}
+                  {typeof item.region === 'object' && item.region !== null ? (item.region as any).nombre : 'Sin región'}
                 </Text>
-                <Text>{item.estadoActual?.estado?.nombre || 'Sin estado'}</Text>
+                <Text>{(item as any).estadoActual?.estado?.nombre || 'Sin estado'}</Text>
 
                 <View style={{ flexDirection: 'row', gap: 8, marginTop: 8, justifyContent: 'space-between' }}>
                   <TouchableOpacity
@@ -303,12 +355,13 @@ export default function Mapa() {
 
   return (
     <View style={styles.container}>
-      {/* Badge FIRMS */}
-      {firmsEnabled && (
-        <View style={{ position: 'absolute', top: (insets.top || 0) + 44, left: 16, backgroundColor: '#0008', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, zIndex: 4 }}>
-          <Text style={{ color: '#fff', fontSize: 12 }}>FIRMS: {firmsGeo?.items?.features?.length ?? 0}</Text>
-        </View>
-      )}
+      {/* Badge de depuración */}
+      <View style={{ position: 'absolute', top: (insets.top || 0) + 8, left: 8, backgroundColor: '#0008', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 8, zIndex: 4 }}>
+        <Text style={{ color: '#fff', fontSize: 12 }}>
+          Incendios: {items.length} • FIRMS: {firmsGeo?.items?.features?.length ?? 0}{'\n'}
+          Δ: {span.latDelta.toFixed(3)} / {span.lngDelta.toFixed(3)}
+        </Text>
+      </View>
 
       <MapView
         ref={mapRef}
@@ -460,6 +513,12 @@ export default function Mapa() {
         <CustomButton icon="location" label="Cerca" onPress={centerOnUser} />
         <CustomButton icon="book" label="Leyenda" onPress={openLeyenda} />
         <CustomButton icon="refresh" label={loading ? '...' : 'Recargar'} onPress={reload} />
+        {/* Fit a Guatemala */}
+        <CustomButton
+          icon="map"
+          label="GT"
+          onPress={() => fitToCoordinates(GT_BBOX as any, { top: 80, right: 80, bottom: 80, left: 80 })}
+        />
       </View>
 
       {/* Chips / Filtros */}

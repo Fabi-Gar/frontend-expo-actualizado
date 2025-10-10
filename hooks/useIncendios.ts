@@ -115,13 +115,15 @@ export function useDeleteIncendio() {
  *  ========================= */
 export function useSetEstadoIncendio() {
   const qc = useQueryClient();
-  return useMutation<any, unknown, { incendioId: string; estadoId: number }>({
+  return useMutation<any, unknown, { incendioId: string; estadoId?: string; estadoNombre?: string }>({
     mutationKey: ['incendios', 'set-estado'],
-    mutationFn: ({ incendioId, estadoId }) => setEstadoIncendio(incendioId, { estadoId: estadoId.toString() }),
-    onSuccess: (_res: any, vars: { incendioId: string; estadoId: number }) => {
+    mutationFn: ({ incendioId, estadoId, estadoNombre }) =>
+      setEstadoIncendio(incendioId, { estadoId, estadoNombre }),
+    onSuccess: (_res, vars) => {
       qc.invalidateQueries({ queryKey: ['incendios', 'detail', vars.incendioId] });
       qc.invalidateQueries({ queryKey: ['incendios', 'list'] });
       qc.invalidateQueries({ queryKey: ['incendios', 'map'] });
     },
   });
 }
+
