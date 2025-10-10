@@ -1,19 +1,19 @@
-// components/EstadoSelectField.tsx
+// components/SelectorModals/EstadoSelectField.tsx
 import React, { useMemo, useState } from 'react';
 import { TouchableOpacity, View, StyleSheet } from 'react-native';
 import { TextInput, HelperText } from 'react-native-paper';
 import SingleSelectModal, { SingleSelectOption } from './SingleSelectModal';
 
-export type Estado = { id: number; nombre: string };
+export type Estado = { id: string; nombre: string; color?: string | null };
 
 type Props = {
-  value: number;
-  onChange: (id: number) => void;
+  value: string;                           // UUID
+  onChange: (id: string) => void;
   estados: Estado[];
   error?: string;
   touched?: boolean;
   label?: string;
-  defaultId?: number; // por si quieres “Por defecto”
+  defaultId?: string;                      // opcional
 };
 
 export default function EstadoSelectField({
@@ -23,7 +23,7 @@ export default function EstadoSelectField({
   error,
   touched,
   label = 'Estado',
-  defaultId = 1,
+  defaultId,
 }: Props) {
   const [open, setOpen] = useState(false);
 
@@ -33,7 +33,7 @@ export default function EstadoSelectField({
   );
 
   const display = useMemo(() => {
-    const found = estados.find((e) => Number(e.id) === Number(value));
+    const found = estados.find((e) => String(e.id) === String(value));
     return found?.nombre ?? '';
   }, [estados, value]);
 
@@ -48,6 +48,7 @@ export default function EstadoSelectField({
             right={<TextInput.Icon icon="menu-down" />}
             style={styles.input}
             error={!!(touched && error)}
+            placeholder="Toca para seleccionar"
           />
         </View>
       </TouchableOpacity>
@@ -59,8 +60,8 @@ export default function EstadoSelectField({
         visible={open}
         title="Selecciona estado"
         options={options}
-        value={value ?? null}
-        onSelect={(id) => onChange(Number(id ?? defaultId))}
+        value={value || null}
+        onSelect={(id) => onChange((id as string) ?? (defaultId ?? ''))}
         onClose={() => setOpen(false)}
         allowClear={false}
         defaultValue={defaultId}

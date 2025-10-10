@@ -3,17 +3,17 @@ import { TouchableOpacity, View, StyleSheet } from 'react-native';
 import { TextInput, HelperText } from 'react-native-paper';
 import MultiSelectModal, { MultiOption } from './MultiSelectModal';
 
-export type Etiqueta = { id: number; nombre: string };
+export type Etiqueta = { id: string; nombre: string; eliminadoEn?: string | null };
 
 type Props = {
-  value: number[];                       // ids seleccionados
-  onChange: (ids: number[]) => void;     // setFieldValue('etiquetasIds', ids)
+  value: string[];
+  onChange: (ids: string[]) => void;
   etiquetas: Etiqueta[];
   label?: string;
   error?: string;
   touched?: boolean;
-  showCountOnly?: boolean;               // si true, muestra "N seleccionadas"
-  maxPreview?: number;                   // cuántos nombres mostrar antes de "y +N"
+  showCountOnly?: boolean;
+  maxPreview?: number;
 };
 
 export default function EtiquetasSelectField({
@@ -29,7 +29,12 @@ export default function EtiquetasSelectField({
   const [open, setOpen] = useState(false);
 
   const options: MultiOption[] = useMemo(
-    () => etiquetas.map((e) => ({ id: e.id, label: e.nombre })),
+    () =>
+      etiquetas.map((e) => ({
+        id: e.id,
+        label: e.nombre,
+        disabled: !!e.eliminadoEn, // <-- en lugar de pasar eliminadoEn crudo
+      })),
     [etiquetas]
   );
 
@@ -37,7 +42,6 @@ export default function EtiquetasSelectField({
     if (showCountOnly) {
       return value.length ? `${value.length} seleccionada(s)` : '';
     }
-    // Mostrar nombres (hasta maxPreview) y luego “+N”
     const lookup = new Map(etiquetas.map((e) => [String(e.id), e.nombre]));
     const names = value.map((id) => lookup.get(String(id))).filter(Boolean) as string[];
     if (!names.length) return '';
@@ -71,9 +75,11 @@ export default function EtiquetasSelectField({
         title="Selecciona etiquetas"
         options={options}
         value={value}
-        onChange={(ids) => onChange(ids.map((x) => Number(x)))}
+        onChange={(ids) => onChange(ids.map(String))}
         onClose={() => setOpen(false)}
         allowClear
+        enableShowFilter={false}
+        disableDeletedSelection={true}
       />
     </>
   );

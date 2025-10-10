@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   View, StyleSheet, TouchableOpacity, TouchableWithoutFeedback,
   Animated, Easing, Alert, Modal, FlatList, Platform, Image, Linking, Share, ScrollView
@@ -13,62 +13,29 @@ import MapView, {
 } from 'react-native-maps';
 import * as Clipboard from 'expo-clipboard';
 import NetInfo from '@react-native-community/netinfo';
-
 import { ActivityIndicator, Text, Chip, Checkbox, Button } from 'react-native-paper';
-
-import ImageViewerModal from '../components/ImageViewerModal';
-import OfflineBanner from '../components/OfflineBanner';
-import EmptyState from '../components/EmptyState';
-import { getCurrentCoords } from '../hooks/location';
-
-import ClusteredMapView from 'react-native-map-clustering';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { router, useFocusEffect } from 'expo-router';
+
+import ImageViewerModal from '@/components/ImageViewerModal';
+import OfflineBanner from '@/components/OfflineBanner';
+import EmptyState from '@/components/EmptyState';
 import { MapTypeDrawer, DRAWER_WIDTH } from '@/components/MapTypeDrawer';
 import { LeyendaDrawer } from '@/components/LeyendaDrawer';
 import { MenuDrawer } from '@/components/MenuDrawer';
-import { router, useFocusEffect } from 'expo-router';
-import { listIncendiosArray, Incendio } from '../services/incendios';
-import { listEtiquetas, Etiqueta } from '../services/catalogos';
-import { getUser } from '../session';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { apiAuth } from '../client';
 
-interface WeightedLatLng {
-  latitude: number;
-  longitude: number;
-  weight?: number;
-}
+import { listEtiquetas, Etiqueta } from '@/services/catalogos';
+import { getUser } from '@/session';
 
-function isFiniteNumber(n: any): n is number {
-  return typeof n === 'number' && Number.isFinite(n);
-}
+import { useIncendiosForMap } from '../hooks/useIncendiosForMap';
+import { useFirmsGT } from '../hooks/useFirmsGT';
+import { useMapRegion } from '../hooks/useMapRegion';
+import { getLatLngFromIncendio, getPinColor, probabilityFromConfidence, probabilityLabel } from '@/app/utils/map';
 
-function getLatLngFromIncendio(item: Incendio) {
-  if (isFiniteNumber((item as any).lat) && isFiniteNumber((item as any).lng)) {
-    return { latitude: (item as any).lat, longitude: (item as any).lng };
-  }
-  if (isFiniteNumber((item as any).lat) && isFiniteNumber((item as any).lon)) {
-    return { latitude: (item as any).lat, longitude: (item as any).lon };
-  }
-  const coords = item.ubicacion?.coordinates;
-  if (Array.isArray(coords) && coords.length === 2) {
-    const lng = Number(coords[0]);
-    const lat = Number(coords[1]);
-    if (isFiniteNumber(lat) && isFiniteNumber(lng)) {
-      return { latitude: lat, longitude: lng };
-    }
-  }
-  return null;
-}
-
-function getPinColor(item: Incendio) {
-  const id = item?.estadoActual?.estado?.id;
-  if (id === 1) return '#E53935'; // Activo
-  if (id === 2) return '#FB8C00'; // Reportado
-  if (id === 3) return '#2E7D32'; // Apagado
-  return '#757575';
-}
+/* ======= Constantes locales ======= */
+const AS_HEATMAP = 'heatmap';
 
 const DEFAULT_REGION: Region = {
   latitude: 15.319,
@@ -77,37 +44,11 @@ const DEFAULT_REGION: Region = {
   longitudeDelta: 0.2,
 };
 
-// BBOX de Guatemala aprox: [minLon, minLat, maxLon, maxLat]
-const GT_BBOX: [number, number, number, number] = [-92.27, 13.74, -88.18, 17.82];
-
-// AsyncStorage keys
-const AS_HEATMAP = 'heatmap';
-const AS_FIRMS_ENABLED = 'firms_enabled';
-const AS_FIRMS_DAYS = 'firms_days';
-
-// TTL del caché de FIRMS (ms)
-const FIRMS_CACHE_TTL = 30 * 60 * 1000; // 30 min
-
-// Helpers
-function probabilityFromConfidence(conf: number) {
-  // conf 0-100 -> 0.2-1.0
-  const w = Math.min(1, Math.max(0.2, conf / 100));
-  return w;
-}
-function probabilityLabel(p: number) {
-  if (p >= 0.85) return 'Muy alta';
-  if (p >= 0.7)  return 'Alta';
-  if (p >= 0.5)  return 'Media';
-  if (p >= 0.35) return 'Baja';
-  return 'Muy baja';
-}
-
 export default function Mapa() {
   const insets = useSafeAreaInsets();
 
-  const [region] = useState<Region>(DEFAULT_REGION);
+  // ----- Estado UI -----
   const [mapType, setMapType] = useState<MapType>('standard');
-
   const [viewer, setViewer] = useState<{ visible: boolean; urls: string[]; index: number } | null>(null);
   const [offline, setOffline] = useState(false);
   const [heatmapEnabled, setHeatmapEnabled] = useState<boolean>(true);
@@ -119,30 +60,47 @@ export default function Mapa() {
   const [leyendaOpen, setLeyendaOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
-  const mapRef = useRef<MapView | null>(null);
-  const mapReadyRef = useRef(false);
-  const currentRegionRef = useRef<Region>(DEFAULT_REGION);
+  // ----- Control del mapa (hook) -----
+  const {
+    mapRef, mapReadyRef, currentRegion, span,
+    onRegionChangeComplete, setMapReady, centerOnUser, fitToCoordinates
+  } = useMapRegion(DEFAULT_REGION);
 
-  const firstAutoFitDoneRef = useRef(false);
-
-  const [items, setItems] = useState<Incendio[]>([]);
-  const [loading, setLoading] = useState(false);
+  // ----- Usuario / permisos -----
   const [currentUser, setCurrentUser] = useState<any>(null);
   const roleId = currentUser?.rol?.id as number | undefined;
   const roleName = typeof currentUser?.rol?.nombre === 'string' ? currentUser.rol.nombre.toLowerCase() : undefined;
   const isAdmin = roleId === 2 || (roleName?.includes?.('admin') ?? false);
 
+  // ----- Catálogo de etiquetas + filtros -----
   const [allEtiquetas, setAllEtiquetas] = useState<Etiqueta[]>([]);
   const [selectedEtiquetaIds, setSelectedEtiquetaIds] = useState<number[]>([]);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
-  // Span de región para detectar zoom (y mostrar markers FIRMS con callouts)
-  const [span, setSpan] = useState({
-    latDelta: DEFAULT_REGION.latitudeDelta,
-    lngDelta: DEFAULT_REGION.longitudeDelta,
+  // ===== Incendios (hook) =====
+  const {
+    items,          // ya filtrados por etiqueta si se la pasamos
+    heatData,
+    loading,
+    reload
+  } = useIncendiosForMap({
+    onlyPublic: true,
+    etiquetaIds: selectedEtiquetaIds,
+    pageSize: 2000,
   });
 
-  // === Persistencia Heatmap (incendios) ===
+  // ===== FIRMS (hook) =====
+  const {
+    enabled: firmsEnabled,
+    setEnabled: setFirmsEnabled,
+    daysWindow,
+    setDaysWindow,
+    loading: firmsLoading,
+    heat: firmsHeat,
+    geo: firmsGeo,
+  } = useFirmsGT(); // usa bbox de GT por defecto + cache
+
+  // ===== Persistencia Heatmap (toggle) =====
   useEffect(() => {
     (async () => {
       try {
@@ -156,14 +114,12 @@ export default function Mapa() {
     AsyncStorage.setItem(AS_HEATMAP, heatmapEnabled ? '1' : '0').catch(() => {});
   }, [heatmapEnabled]);
 
-  // Usuario para admin
+  // ===== Usuario actual =====
   useEffect(() => {
-    (async () => {
-      try { setCurrentUser(await getUser()); } catch {}
-    })();
+    (async () => { try { setCurrentUser(await getUser()); } catch {} })();
   }, []);
 
-  // Conectividad con NetInfo
+  // ===== Conectividad =====
   useEffect(() => {
     const sub = NetInfo.addEventListener((state) => {
       const noInternet = !(state.isConnected && state.isInternetReachable);
@@ -172,64 +128,29 @@ export default function Mapa() {
     return () => sub && sub();
   }, []);
 
-  // Cargar catálogos (etiquetas)
+  // ===== Cargar etiquetas =====
   useEffect(() => {
     (async () => {
-      try {
-        const etqs = await listEtiquetas();
-        setAllEtiquetas(etqs || []);
-      } catch {}
+      try { setAllEtiquetas(await listEtiquetas() || []); } catch {}
     })();
   }, []);
 
-  // Centrar en usuario (botón “Cerca”)
-  const centerOnUser = useCallback(async () => {
-    const coords = await getCurrentCoords();
-    if (!coords) return;
-    const next: Region = {
-      latitude: coords.lat,
-      longitude: coords.lng,
-      latitudeDelta: 0.06,
-      longitudeDelta: 0.06,
-    };
-    currentRegionRef.current = next;
-    if (mapReadyRef.current && mapRef.current) {
-      (mapRef.current as any).animateToRegion(next, 500);
+  // ===== Cargar/recargar incendios =====
+  useEffect(() => { reload(); }, [reload]);
+  useFocusEffect(useCallback(() => { reload(); }, [reload]));
+
+  // Autofit una sola vez cuando haya datos
+  const firstAutoFitDoneRef = useRef(false);
+  useEffect(() => {
+    if (!mapRef.current || !items.length || firstAutoFitDoneRef.current) return;
+    const coords = items.map(getLatLngFromIncendio).filter(Boolean) as { latitude: number; longitude: number }[];
+    if (coords.length) {
+      fitToCoordinates(coords, { top: 60 + insets.top, right: 60, bottom: 60 + insets.bottom, left: 60 });
+      firstAutoFitDoneRef.current = true;
     }
-  }, []);
+  }, [items, mapRef, fitToCoordinates, insets.top, insets.bottom]);
 
-  // Cargar incendios (array plano)
-  const loadIncendios = useCallback(async () => {
-    try {
-      setLoading(true);
-      const arr = await listIncendiosArray(1, 2000);
-      const visibles = (arr || []).filter(x => x.visiblePublico === true);
-      setItems(visibles);
-
-      // autofit solo una vez
-      if (mapRef.current && visibles.length && !firstAutoFitDoneRef.current) {
-        const coords = visibles
-          .map(getLatLngFromIncendio)
-          .filter(Boolean) as { latitude: number; longitude: number }[];
-        if (coords.length) {
-          mapRef.current.fitToCoordinates(coords, {
-            edgePadding: { top: 60 + insets.top, right: 60, bottom: 60 + insets.bottom, left: 60 },
-            animated: true,
-          });
-          firstAutoFitDoneRef.current = true;
-        }
-      }
-    } catch (e: any) {
-      Alert.alert('Error', e?.response?.data?.error || 'No se pudieron cargar los incendios');
-    } finally {
-      setLoading(false);
-    }
-  }, [insets.bottom, insets.top]);
-
-  useEffect(() => { loadIncendios(); }, [loadIncendios]);
-  useFocusEffect(useCallback(() => { loadIncendios(); }, [loadIncendios]));
-
-  // Drawers open/close
+  // ===== Helpers UI =====
   const openDrawer = () => {
     setDrawerOpen(true);
     Animated.timing(drawerAnim, { toValue: 0, duration: 300, easing: Easing.out(Easing.ease), useNativeDriver: false }).start();
@@ -253,134 +174,15 @@ export default function Mapa() {
   };
 
   const handleMenuNavigate = (route: string) => {
-    if (route === 'Mapa') { closeMenu(); return; }
-    if (route === 'Ayuda') { closeMenu(); return; }
+    if (route === 'Mapa' || route === 'Ayuda' || route === 'Logout') { closeMenu(); return; }
     if (route === 'listaIncendios') { closeMenu(); router.push('/incendios/listaIncendios'); return; }
     if (route === 'Etiquetas') { closeMenu(); router.push('/admin/etiquetas'); return; }
     if (route === 'Estados') { closeMenu(); router.push('/admin/estados'); return; }
     if (route === 'Regiones') { closeMenu(); router.push('/admin/regiones'); return; }
     if (route === 'Usuarios') { closeMenu(); router.push('/admin/usuarios'); return; }
     if (route === 'Roles') { closeMenu(); router.push('/admin/roles'); return; }
-    if (route === 'Logout') { closeMenu(); return; }
     closeMenu();
   };
-
-  // ===== Filtro por etiquetas =====
-  const filteredItems = useMemo(() => {
-    if (!selectedEtiquetaIds.length) return items;
-    const setIds = new Set(selectedEtiquetaIds);
-    return items.filter(it => (it.etiquetas || []).some(e => setIds.has(e.id)));
-  }, [items, selectedEtiquetaIds]);
-
-  // Heatmap datos desde filteredItems (incendios)
-  const heatData: WeightedLatLng[] = useMemo(() => {
-    return filteredItems
-      .map((it) => {
-        const pos = getLatLngFromIncendio(it);
-        if (!pos) return null;
-        const estadoId = it?.estadoActual?.estado?.id;
-        const weight = estadoId === 1 ? 1.0 : estadoId === 2 ? 0.7 : estadoId === 3 ? 0.3 : 0.5;
-        return { latitude: pos.latitude, longitude: pos.longitude, weight };
-      })
-      .filter(Boolean) as WeightedLatLng[];
-  }, [filteredItems]);
-
-  // ======= FIRMS: cargar TODOS Guatemala + persistencia =======
-  const [firmsEnabled, setFirmsEnabled] = useState<boolean>(true);
-  const [daysWindow, setDaysWindow] = useState<number>(3); // 1/3/7
-  const [firmsGeo, setFirmsGeo] = useState<any | null>(null);
-  const [firmsLoading, setFirmsLoading] = useState<boolean>(false);
-
-  // lee prefs FIRMS
-  useEffect(() => {
-    (async () => {
-      try {
-        const en = await AsyncStorage.getItem(AS_FIRMS_ENABLED);
-        if (en === '0') setFirmsEnabled(false);
-        if (en === '1') setFirmsEnabled(true);
-        const d = await AsyncStorage.getItem(AS_FIRMS_DAYS);
-        if (d) {
-          const n = Number(d);
-          if (n === 1 || n === 3 || n === 7) setDaysWindow(n);
-        }
-      } catch {}
-    })();
-  }, []);
-  // guarda prefs FIRMS
-  useEffect(() => {
-    AsyncStorage.setItem(AS_FIRMS_ENABLED, firmsEnabled ? '1' : '0').catch(() => {});
-  }, [firmsEnabled]);
-  useEffect(() => {
-    AsyncStorage.setItem(AS_FIRMS_DAYS, String(daysWindow)).catch(() => {});
-  }, [daysWindow]);
-
-  // carga FIRMS (Guatemala completa) con caché en AsyncStorage
-  const AS_FIRMS_CACHE_PREFIX = 'firms_gt_cache_all_d'; // + days
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadFirmsAllGT() {
-      try {
-        if (!firmsEnabled) { setFirmsGeo(null); return; }
-
-        const key = `${AS_FIRMS_CACHE_PREFIX}${daysWindow}`;
-        const cached = await AsyncStorage.getItem(key);
-        if (cached) {
-          try {
-            const parsed = JSON.parse(cached);
-            if (parsed?.ts && (Date.now() - parsed.ts) < FIRMS_CACHE_TTL && parsed?.data) {
-              if (!cancelled) setFirmsGeo(parsed.data);
-              return;
-            }
-          } catch {}
-        }
-
-        setFirmsLoading(true);
-
-        const q = new URLSearchParams();
-        q.set('as', 'geojson');
-        q.set('days', String(daysWindow));            // 1/3/7
-        q.set('order', 'recientes');                  // o 'confianza' / 'frp'
-        q.set('bbox', GT_BBOX.join(','));             // Guatemala
-        // IMPORTANTE: nombres reales de productos en tu BD
-        q.set('product', 'VIIRS_SNPP_NRT,VIIRS_NOAA20_NRT,MODIS_NRT');
-        q.set('limit', '5000');                       // tope del backend
-        q.set('page', '1');
-
-        // Si esperas >5000, aquí podrías paginar en un loop.
-        const { data } = await apiAuth.get(`/api/firms/puntos?${q.toString()}`);
-
-        if (!cancelled) {
-          setFirmsGeo(data);
-          await AsyncStorage.setItem(key, JSON.stringify({ ts: Date.now(), data }));
-        }
-      } catch {
-        // opcional: Alert.alert('FIRMS', 'Error al cargar FIRMS/MODIS GT');
-      } finally {
-        if (!cancelled) setFirmsLoading(false);
-      }
-    }
-
-    loadFirmsAllGT();
-    return () => { cancelled = true; };
-  }, [firmsEnabled, daysWindow]);
-
-  // Transformar FIRMS → Heatmap points (Guatemala completa)
-  const firmsHeat = useMemo(() => {
-    const feats = firmsGeo?.items?.features ?? [];
-    return feats.map((f: any) => {
-      const [lon, lat] = f.geometry.coordinates as [number, number];
-      const conf = Number(f.properties?.confidence ?? 50);
-      const weight = probabilityFromConfidence(conf);
-      return { latitude: lat, longitude: lon, weight };
-    });
-  }, [firmsGeo]);
-
-  // Mostrar puntos FIRMS como markers (tap) con zoom alto (para ver callouts)
-  const showFirmDots = useMemo(() => {
-    return span.latDelta < 0.05 && span.lngDelta < 0.05;
-  }, [span.latDelta, span.lngDelta]);
 
   const lastTapRef = useRef<number>(0);
   const debounceTap = (fn: () => void, ms = 180) => {
@@ -407,9 +209,12 @@ export default function Mapa() {
     await Clipboard.setStringAsync(`${lat.toFixed(6)}, ${lng.toFixed(6)}`);
   };
 
+  // Mostrar puntos FIRMS (markers) sólo con zoom alto
+  const showFirmDots = span.latDelta < 0.05 && span.lngDelta < 0.05;
+
   const renderMarkers = () => (
     <>
-      {filteredItems.map((item) => {
+      {items.map((item) => {
         const coord = getLatLngFromIncendio(item);
         if (!coord) return null;
         const { latitude: lat, longitude: lng } = coord;
@@ -444,7 +249,7 @@ export default function Mapa() {
                     source={
                       cover
                         ? { uri: cover }
-                        : require('../assets/images/placeholder_incendio.png')
+                        : require('@/assets/images/placeholder_incendio.png')
                     }
                     style={{ width: 220, height: 110, borderRadius: 8, marginTop: 6 }}
                     resizeMode="cover"
@@ -498,55 +303,27 @@ export default function Mapa() {
 
   return (
     <View style={styles.container}>
-      {/* Badge de depuración opcional */}
+      {/* Badge FIRMS */}
       {firmsEnabled && (
         <View style={{ position: 'absolute', top: (insets.top || 0) + 44, left: 16, backgroundColor: '#0008', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, zIndex: 4 }}>
           <Text style={{ color: '#fff', fontSize: 12 }}>FIRMS: {firmsGeo?.items?.features?.length ?? 0}</Text>
         </View>
       )}
 
-      <ClusteredMapView
+      <MapView
         ref={mapRef}
         provider={PROVIDER_GOOGLE}
         style={StyleSheet.absoluteFillObject}
-        initialRegion={region}
+        initialRegion={currentRegion}
         showsUserLocation
         showsMyLocationButton={false}
-        onRegionChangeComplete={(r) => {
-          currentRegionRef.current = r;
-          // actualizar span para decidir si mostramos markers FIRMS
-          setSpan({ latDelta: r.latitudeDelta, lngDelta: r.longitudeDelta });
-        }}
+        onRegionChangeComplete={onRegionChangeComplete}
+        onMapReady={async () => { setMapReady(); await centerOnUser(); }}
         mapType={mapType}
         mapPadding={{ top: insets.top + 48, right: 0, bottom: insets.bottom, left: 0 }}
-        // @ts-ignore
-        clusterColor="#4CAF50"
-        // @ts-ignore
-        clusterTextColor="#fff"
-        // @ts-ignore
-        spiralEnabled={true}
-        // @ts-ignore
-        animationEnabled={true}
-        onMapReady={async () => {
-          mapReadyRef.current = true;
-          const coords = await getCurrentCoords();
-          if (coords && mapRef.current) {
-            const initial: Region = {
-              latitude: coords.lat,
-              longitude: coords.lng,
-              latitudeDelta: 0.06,
-              longitudeDelta: 0.06,
-            };
-            currentRegionRef.current = initial;
-            setSpan({ latDelta: initial.latitudeDelta, lngDelta: initial.longitudeDelta });
-            (mapRef.current as any).animateToRegion(initial, 0);
-          } else {
-            centerOnUser();
-          }
-        }}
       >
         {/* Heatmap de incendios propios */}
-        {heatmapEnabled && (
+        {heatmapEnabled && heatData.length > 0 && (
           <Heatmap
             points={heatData}
             radius={42}
@@ -559,7 +336,7 @@ export default function Mapa() {
           />
         )}
 
-        {/* Capa FIRMS (heatmap, Guatemala completa) */}
+        {/* Capa FIRMS (heatmap) */}
         {firmsEnabled && firmsHeat.length > 0 && (
           <Heatmap
             points={firmsHeat}
@@ -618,9 +395,9 @@ export default function Mapa() {
 
         {/* Marcadores de incendios */}
         {renderMarkers()}
-      </ClusteredMapView>
+      </MapView>
 
-      {/* Loader overlay mientras carga incendios o FIRMS */}
+      {/* Loader overlay */}
       {(loading || firmsLoading) && (
         <View style={styles.loaderOverlay}>
           <ActivityIndicator size="large" />
@@ -630,7 +407,7 @@ export default function Mapa() {
         </View>
       )}
 
-      <OfflineBanner visible={offline} onRetry={loadIncendios} />
+      <OfflineBanner visible={offline} onRetry={reload} />
 
       {(drawerOpen || leyendaOpen || menuOpen) && (
         <TouchableWithoutFeedback
@@ -658,13 +435,13 @@ export default function Mapa() {
         <View style={{ alignItems: 'center' }}>
           <Text style={styles.headerText}>App incendios</Text>
           <Text style={{ color: '#E8F5E9', fontSize: 12 }}>
-            Mostrando {filteredItems.length} de {items.length}
+            Mostrando {items.length} incendios
           </Text>
         </View>
 
         <TouchableOpacity
           onPress={() => {
-            const r = currentRegionRef.current;
+            const r = currentRegion;
             router.push({
               pathname: '/incendios/crear',
               params: { lat: String(r.latitude), lng: String(r.longitude) },
@@ -682,19 +459,12 @@ export default function Mapa() {
         <CustomButton icon="layers" label="Capa" onPress={openDrawer} />
         <CustomButton icon="location" label="Cerca" onPress={centerOnUser} />
         <CustomButton icon="book" label="Leyenda" onPress={openLeyenda} />
-        <CustomButton icon="refresh" label={loading ? '...' : 'Recargar'} onPress={loadIncendios} />
+        <CustomButton icon="refresh" label={loading ? '...' : 'Recargar'} onPress={reload} />
       </View>
 
-      {/* Chips en slider horizontal dentro de contenedor ABSOLUTO (no tapa el mapa) */}
-      <View
-        pointerEvents="box-none"
-        style={[styles.topChipsWrap, { top: (insets.top || 0) + 70 }]}
-      >
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.topChipsBar}
-        >
+      {/* Chips / Filtros */}
+      <View pointerEvents="box-none" style={[styles.topChipsWrap, { top: (insets.top || 0) + 70 }]}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.topChipsBar}>
           <Chip
             selected={heatmapEnabled}
             onPress={() => setHeatmapEnabled(v => !v)}
@@ -753,7 +523,7 @@ export default function Mapa() {
             keyExtractor={(x) => String(x.id)}
             style={{ maxHeight: 320 }}
             renderItem={({ item }) => {
-              const checked = selectedEtiquetaIds.includes(item.id);
+              const checked = selectedEtiquetaIds.includes(Number(item.id));
               return (
                 <TouchableOpacity
                   style={styles.sheetRow}
@@ -761,7 +531,7 @@ export default function Mapa() {
                   onPress={() => {
                     setSelectedEtiquetaIds(prev => {
                       const set = new Set(prev);
-                      checked ? set.delete(item.id) : set.add(item.id);
+                      checked ? set.delete(Number(item.id)) : set.add(Number(item.id));
                       return Array.from(set);
                     });
                   }}
@@ -786,27 +556,19 @@ export default function Mapa() {
       </Modal>
 
       {/* Empty state */}
-      {!loading && filteredItems.length === 0 && (
+      {!loading && items.length === 0 && (
         <View style={[styles.emptyOverlay, { top: (insets.top || 0) + 120 }]}>
           <EmptyState
             title="No hay incendios para mostrar"
-            subtitle={
-              selectedEtiquetaIds.length
-                ? 'Prueba limpiar filtros de etiquetas.'
-                : 'Cuando haya reportes, aparecerán aquí.'
-            }
-            actionLabel={
-              isAdmin ? 'Crear reporte aquí' : (selectedEtiquetaIds.length ? 'Limpiar filtros' : undefined)
-            }
+            subtitle="Cuando haya reportes, aparecerán aquí."
+            actionLabel={isAdmin ? 'Crear reporte aquí' : undefined}
             onAction={() => {
               if (isAdmin) {
-                const r = currentRegionRef.current;
+                const r = currentRegion;
                 router.push({
                   pathname: '/incendios/crear',
                   params: { lat: String(r.latitude), lng: String(r.longitude) },
                 });
-              } else if (selectedEtiquetaIds.length) {
-                setSelectedEtiquetaIds([]);
               }
             }}
           />
@@ -850,19 +612,8 @@ const styles = StyleSheet.create({
   customButton: { backgroundColor: '#009688', borderRadius: 10, padding: 10, alignItems: 'center' },
   buttonLabel: { color: '#fff', fontSize: 12, marginTop: 4 },
 
-  // Chips horizontal sin ocupar pantalla completa:
-  topChipsWrap: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    zIndex: 3,
-  },
-  topChipsBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingRight: 8,
-  },
+  topChipsWrap: { position: 'absolute', left: 16, right: 16, zIndex: 3 },
+  topChipsBar: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingRight: 8 },
   chip: { backgroundColor: '#FFFFFFEE', marginRight: 8 },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)' },

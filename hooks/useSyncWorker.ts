@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useConnectivity } from './useConnectivity';
-import { peekAll, dequeueById, SYNC_EVENTS } from './syncQueue';
+import { peekAll, dequeueById,  } from './syncQueue';
 import { createIncendioAvanzado, setEstadoIncendio } from '@/services/incendios';
 import { uploadIncendioPhotos } from '@/services/uploads';
 import { showToast } from './uiStore';
@@ -24,7 +24,7 @@ export function useSyncWorker() {
             const created = await createIncendioAvanzado({
               titulo: values.titulo,
               descripcion: values.descripcion,
-              regionId: Number(values.regionId),
+              regionId: String(values.regionId),
               lat: parseFloat(values.lat),
               lng: parseFloat(values.lng),
               visiblePublico: values.visiblePublico === true,
@@ -34,7 +34,7 @@ export function useSyncWorker() {
             });
 
             // 2) estado
-            try { await setEstadoIncendio(created.id, Number(values.estadoId)); } catch {}
+            try { await setEstadoIncendio(created.id, { estadoId: String(values.estadoId) }); } catch {}
 
             // 3) fotos
             if (photos?.length) {
@@ -45,7 +45,7 @@ export function useSyncWorker() {
             emit(EVENTS.INCENDIO_CREATED, { id: created.id });
           }
         } catch (e) {
-          showToast({ type: 'error', message: 'Error al sincronizar datos pendientes' });
+          showToast({ type: 'error', message: 'Error al sincronizar datos pendientes' +e});
           return;
         }
       }

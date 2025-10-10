@@ -30,13 +30,11 @@ import {
   UserAccount,
   listRoles,
   Role,
-  // Si exportaste el tipo desde el service, descomenta:
-  // UsersPaged
+ 
 } from '../../services/catalogos';
 
 type ViewMode = 'active' | 'deleted' | 'all';
 
-// Si NO exportaste UsersPaged desde el service, deja este tipo local:
 type UsersPaged = {
   items: UserAccount[];
   page: number;
@@ -130,29 +128,27 @@ export default function UsuariosIndex() {
     }
   }, [load]);
 
-  // Ejecutar load cuando cambie viewMode o q (debounce para q)
   useEffect(() => {
     scheduleLoad(load);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewMode, q]);
+  }, [viewMode, q, load]);
 
   // --- Crear / Editar ---
   const openCreate = () => {
     setEditing(null);
     setFormNombre('');
     setFormCorreo('');
-    setFormPassword(''); // requerido al crear
+    setFormPassword(''); 
     setFormRolId(null);
     setFormActivo(true);
     setModalVisible(true);
   };
 
   const openEdit = (u: UserAccount) => {
-    if (u.eliminadoEn) return; // no editar si está eliminado
+    if (u.eliminadoEn) return; 
     setEditing(u);
     setFormNombre(u.nombre || '');
     setFormCorreo(u.correo || '');
-    setFormPassword(''); // opcional en edición (vacío = no cambiar)
+    setFormPassword(''); 
     setFormRolId(u.rol?.id || null);
     setFormActivo(u.activo ?? true);
     setModalVisible(true);
@@ -171,7 +167,7 @@ export default function UsuariosIndex() {
         const payload: any = {
           nombre: formNombre.trim(),
           correo: formCorreo.trim(),
-          rolId: formRolId,        // puede ser string o null
+          rolId: formRolId,        
           activo: formActivo,
         };
         if (formPassword.trim()) {
@@ -188,7 +184,7 @@ export default function UsuariosIndex() {
           nombre: formNombre.trim(),
           correo: formCorreo.trim(),
           password: formPassword.trim(),
-          rolId: formRolId || undefined, // no enviar si es null
+          rolId: formRolId || undefined, 
         });
       }
 

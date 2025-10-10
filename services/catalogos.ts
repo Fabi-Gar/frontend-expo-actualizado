@@ -1,12 +1,34 @@
 import { apiAuth } from '../client';
 
 // ===== Tipos (UUID en id) =====
-export type Region = { id: string; nombre: string; codigo?: string };
-export type Etiqueta = { id: string; nombre: string; eliminadoEn?: string | null };
-export type Estado = { id: string; nombre: string; color?: string };
+export type Region = {
+  id: string;
+  nombre: string;
+  codigo?: string;
+  creadoEn?: string;
+  actualizadoEn?: string;
+  eliminadoEn?: string | null;
+};
+
+export type Etiqueta = {
+  id: string;
+  nombre: string;
+  creadoEn?: string;
+  actualizadoEn?: string;
+  eliminadoEn?: string | null;
+};
+
+export type Estado = {
+  id: string;
+  nombre: string;
+  color?: string;
+  creadoEn?: string;
+  actualizadoEn?: string;
+  eliminadoEn?: string | null;
+};
 
 export type Role = {
-  id: string;      
+  id: string;
   nombre: string;
   creadoEn: string;
   actualizadoEn: string;
@@ -15,6 +37,14 @@ export type Role = {
 
 export type RolesPaged = {
   items: Role[];
+  page: number;
+  limit: number;
+  total: number;
+  hasMore: boolean;
+};
+
+export type RegionsPaged = {
+  items: Region[];
   page: number;
   limit: number;
   total: number;
@@ -40,10 +70,30 @@ export type UserAccount = {
   activo: boolean;
 };
 
-// ===== Regiones =====
-export async function listRegiones(): Promise<Region[]> {
-  const { data } = await apiAuth.get('/api/regiones');
-  return Array.isArray(data) ? (data as Region[]) : [];
+// ===== Helpers de compatibilidad (respuestas envueltas o directas) =====
+function unwrapRole(data: any): Role {
+  return data?.role ?? data;
+}
+function unwrapRegion(data: any): Region {
+  return data?.region ?? data;
+}
+function unwrapEtiqueta(data: any): Etiqueta {
+  return data?.etiqueta ?? data;
+}
+function unwrapEstado(data: any): Estado {
+  return data?.estado ?? data;
+}
+
+// ===== Regiones (paged + filtros + restore) =====
+export async function listRegiones(opts?: { show?: 'deleted' | 'all'; page?: number; limit?: number; q?: string }): Promise<RegionsPaged> {
+  const params = new URLSearchParams();
+  if (opts?.show) params.set('show', opts.show);
+  if (opts?.page) params.set('page', String(opts.page));
+  if (opts?.limit) params.set('limit', String(opts.limit));
+  if (opts?.q) params.set('q', opts.q);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  const { data } = await apiAuth.get(`/api/regiones${qs}`);
+  return data as RegionsPaged; // backend: { items, page, limit, total, hasMore }
 }
 
 export async function createRegion(payload: { nombre?: string; codigo?: string }) {
@@ -57,8 +107,13 @@ export async function updateRegion(id: string, payload: { nombre?: string; codig
 }
 
 export async function deleteRegion(id: string) {
-  const { data } = await apiAuth.delete(`/api/regiones/${id}`);
-  return data;
+  await apiAuth.delete(`/api/regiones/${id}`);
+  return { ok: true };
+}
+
+export async function restoreRegion(id: string) {
+  const { data } = await apiAuth.post(`/api/regiones/${id}/restore`);
+  return unwrapRegion(data);
 }
 
 // ===== Etiquetas =====
@@ -79,20 +134,22 @@ export async function updateEtiqueta(id: string, payload: { nombre?: string }) {
 }
 
 export async function deleteEtiqueta(id: string) {
-  const res = await apiAuth.delete(`/api/etiquetas/${id}`);
-  return res.data ?? { ok: true };
+  await apiAuth.delete(`/api/etiquetas/${id}`);
+  return { ok: true };
 }
 
 export async function restoreEtiqueta(id: string) {
   const { data } = await apiAuth.post(`/api/etiquetas/${id}/restore`, {});
-  return data as Etiqueta;
+  return unwrapEtiqueta(data);
 }
 
 // ===== Estados =====
-export async function listEstados(): Promise<Estado[]> {
-  const { data } = await apiAuth.get('/api/estado-incendio');
+export async function listEstados(opts?: { show?: 'deleted' | 'all' }) {
+  const q = opts?.show ? `?show=${opts.show}` : '';
+  const { data } = await apiAuth.get(`/api/estado-incendio${q}`);
   return Array.isArray(data) ? (data as Estado[]) : [];
 }
+
 
 export async function createEstado(payload: { nombre: string; color?: string }) {
   const { data } = await apiAuth.post('/api/estado-incendio', payload);
@@ -103,13 +160,18 @@ export async function updateEstado(id: string, payload: { nombre?: string; color
   const { data } = await apiAuth.patch(`/api/estado-incendio/${id}`, payload);
   return data as Estado;
 }
+
 export async function deleteEstado(id: string) {
-  const res = await apiAuth.delete(`/api/estado-incendio/${id}`);
-  return res.data ?? { ok: true };
+  await apiAuth.delete(`/api/estado-incendio/${id}`);
+  return { ok: true };
+}
+
+export async function restoreEstado(id: string) {
+  const { data } = await apiAuth.post(`/api/estado-incendio/${id}/restore`);
+  return unwrapEstado(data);
 }
 
 // ===== Roles =====
-
 export async function listRoles(opts?: { show?: 'deleted' | 'all'; page?: number; limit?: number; q?: string }): Promise<RolesPaged> {
   const params = new URLSearchParams();
   if (opts?.show) params.set('show', opts.show);
@@ -133,28 +195,26 @@ export async function updateRole(id: string, payload: { nombre?: string }) {
 }
 
 export async function deleteRole(id: string) {
-  const { data } = await apiAuth.delete(`/api/roles/${id}`);
-  return data;
+  await apiAuth.delete(`/api/roles/${id}`);
+  return { ok: true };
 }
 
 export async function restoreRole(id: string) {
   const { data } = await apiAuth.post(`/api/roles/${id}/restore`);
-  return data;
+  return unwrapRole(data);
 }
+
 // ===== Usuarios (id UUID) =====
-
-
 export async function listUsers(opts?: { show?: 'deleted' | 'all'; page?: number; limit?: number; q?: string }): Promise<UsersPaged> {
   const params = new URLSearchParams();
-    if (opts?.show) params.set('show', opts.show);
-    if (opts?.page) params.set('page', String(opts.page));
-    if (opts?.limit) params.set('limit', String(opts.limit));
-    if (opts?.q) params.set('q', opts.q);
-    const qs = params.toString() ? `?${params.toString()}` : '';
-    const { data } = await apiAuth.get(`/api/usuarios${qs}`);
-  return data as UsersPaged; 
+  if (opts?.show) params.set('show', opts.show);
+  if (opts?.page) params.set('page', String(opts.page));
+  if (opts?.limit) params.set('limit', String(opts.limit));
+  if (opts?.q) params.set('q', opts.q);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  const { data } = await apiAuth.get(`/api/usuarios${qs}`);
+  return data as UsersPaged;
 }
-
 
 export async function createUser(payload: { nombre: string; correo: string; password: string; rolId?: string }) {
   const { data } = await apiAuth.post("/api/usuarios", payload);
@@ -170,11 +230,16 @@ export async function updateUser(
 }
 
 export async function deleteUser(id: string) {
-  const { data } = await apiAuth.delete(`/api/usuarios/${id}`);
-  return data;
+  await apiAuth.delete(`/api/usuarios/${id}`);
+  return { ok: true };
 }
 
 export async function restoreUser(id: string) {
   const { data } = await apiAuth.post(`/api/usuarios/${id}/restore`);
-  return data as UserAccount;
+  return data as UserAccount; 
+}
+
+export async function getEstado(id: string) {
+  const { data } = await apiAuth.get(`/api/estado-incendio/${id}`);
+  return data as Estado;
 }

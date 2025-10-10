@@ -1,5 +1,5 @@
 // app/admin/estados/index.tsx
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   StyleSheet,
@@ -18,6 +18,7 @@ import {
   Modal,
   Button,
   HelperText,
+  Menu,
 } from 'react-native-paper';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
@@ -27,8 +28,11 @@ import {
   createEstado,
   updateEstado,
   deleteEstado,
+  restoreEstado,
   Estado,
 } from '../../services/catalogos';
+
+type ViewMode = 'active' | 'deleted' | 'all';
 
 export default function EstadosIndex() {
   const [items, setItems] = useState<Estado[]>([]);
@@ -36,37 +40,53 @@ export default function EstadosIndex() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Modal
+  // vista
+  const [viewMode, setViewMode] = useState<ViewMode>('active');
+  const [menuVisible, setMenuVisible] = useState(false);
+
+  // modal
   const [modalVisible, setModalVisible] = useState(false);
   const [editing, setEditing] = useState<Estado | null>(null);
   const [formNombre, setFormNombre] = useState('');
   const [formColor, setFormColor] = useState(''); // opcional
 
+  // debounce (para mantener consistencia con Roles/Regiones)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const schedule = (fn: () => void, ms = 300) => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(fn, ms);
+  };
+
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await listEstados();
+      const show =
+        viewMode === 'deleted' ? { show: 'deleted' as const }
+        : viewMode === 'all' ? { show: 'all' as const }
+        : undefined;
+
+      const data = await listEstados(show);
       setItems(data || []);
     } catch (e: any) {
-      Alert.alert('Error', e?.response?.data?.error || 'No se pudieron cargar estados');
+      Alert.alert('Error', e?.response?.data?.message || e?.response?.data?.error || 'No se pudieron cargar estados');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [viewMode]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      const data = await listEstados();
-      setItems(data || []);
-    } catch (e: any) {
-      Alert.alert('Error', e?.response?.data?.error || 'No se pudieron cargar estados');
+      await load();
     } finally {
       setRefreshing(false);
     }
-  }, []);
+  }, [load]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    schedule(load);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewMode]);
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
@@ -82,6 +102,7 @@ export default function EstadosIndex() {
     setModalVisible(true);
   };
   const openEdit = (e: Estado) => {
+    if ((e as any).eliminadoEn) return; // no editar si está eliminado
     setEditing(e);
     setFormNombre(e.nombre || '');
     setFormColor((e as any).color || '');
@@ -117,25 +138,38 @@ export default function EstadosIndex() {
       closeModal();
       await load();
     } catch (e: any) {
-      Alert.alert('Error', e?.response?.data?.error || 'No se pudo guardar');
+      Alert.alert('Error', e?.response?.data?.message || e?.response?.data?.error || 'No se pudo guardar');
     } finally {
       setLoading(false);
     }
   };
 
   const askDelete = (e: Estado) => {
+    if ((e as any).eliminadoEn) return; // ya eliminado
     Alert.alert('Eliminar', `¿Eliminar el estado "${e.nombre}"?`, [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Eliminar', style: 'destructive', onPress: () => doDelete(e.id) },
     ]);
   };
-  const doDelete = async (id: number) => {
+  const doDelete = async (id: string) => {
     try {
       setLoading(true);
       await deleteEstado(id);
       await load();
     } catch (e: any) {
-      Alert.alert('Error', e?.response?.data?.error || 'No se pudo eliminar');
+      Alert.alert('Error', e?.response?.data?.message || e?.response?.data?.error || 'No se pudo eliminar');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const doRestore = async (id: string) => {
+    try {
+      setLoading(true);
+      await restoreEstado(id);
+      await load();
+    } catch (e: any) {
+      Alert.alert('Error', e?.response?.data?.message || e?.response?.data?.error || 'No se pudo restaurar');
     } finally {
       setLoading(false);
     }
@@ -145,9 +179,38 @@ export default function EstadosIndex() {
     <View style={styles.root}>
       <Appbar.Header mode="small">
         <Appbar.BackAction onPress={() => router.back()} />
-        <Appbar.Content title="Estados (Admin)" />
-        {/* Botón de nuevo arriba derecha */}
-        <Appbar.Action icon="plus" onPress={openCreate} />
+        <Appbar.Content title={
+          viewMode === 'deleted' ? 'Estados eliminados'
+          : viewMode === 'all' ? 'Estados (Todos)'
+          : 'Estados (Admin)'
+        } />
+        {/* Menú de vista */}
+        <Menu
+          visible={menuVisible}
+          onDismiss={() => setMenuVisible(false)}
+          anchor={<Appbar.Action icon="filter-variant" onPress={() => setMenuVisible(true)} />}
+        >
+          <Menu.Item
+            onPress={() => { setViewMode('active'); setMenuVisible(false); }}
+            title="Activos"
+            leadingIcon={viewMode === 'active' ? 'check' : undefined}
+          />
+          <Menu.Item
+            onPress={() => { setViewMode('deleted'); setMenuVisible(false); }}
+            title="Eliminados"
+            leadingIcon={viewMode === 'deleted' ? 'check' : undefined}
+          />
+          <Menu.Item
+            onPress={() => { setViewMode('all'); setMenuVisible(false); }}
+            title="Todos"
+            leadingIcon={viewMode === 'all' ? 'check' : undefined}
+          />
+        </Menu>
+
+        {/* Crear solo si no estás viendo eliminados */}
+        {viewMode !== 'deleted' && (
+          <Appbar.Action icon="plus" onPress={openCreate} />
+        )}
       </Appbar.Header>
 
       <View style={styles.searchBox}>
@@ -172,34 +235,51 @@ export default function EstadosIndex() {
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
           ItemSeparatorComponent={() => <View style={styles.sep} />}
           ListEmptyComponent={<View style={styles.center}><Text>No hay estados</Text></View>}
-          renderItem={({ item }) => (
-            <TouchableOpacity activeOpacity={0.85} onPress={() => openEdit(item)}>
-              <View style={styles.row}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.rowTitle}>{item.nombre}</Text>
-                  <View style={styles.rowMeta}>
-                    <Text style={styles.metaText}>ID: {item.id}</Text>
-                    {(item as any).color ? (
-                      <Chip icon={() => <Ionicons name="color-palette" size={14} />}>
-                        {(item as any).color}
-                      </Chip>
-                    ) : (
-                      <Chip>sin color</Chip>
-                    )}
+          renderItem={({ item }) => {
+            const isDeleted = Boolean((item as any).eliminadoEn);
+            const color = (item as any).color as string | undefined;
+            return (
+              <TouchableOpacity activeOpacity={0.85} onPress={() => (!isDeleted) && openEdit(item)}>
+                <View style={[styles.row, isDeleted && { opacity: 0.85 }]}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.rowTitle}>
+                      {item.nombre}{isDeleted ? ' (Eliminado)' : ''}
+                    </Text>
+                    <View style={styles.rowMeta}>
+                      <Text style={styles.metaText}>ID: {item.id}</Text>
+                      {color ? (
+                        <Chip icon={() => <Ionicons name="color-palette" size={14} />}>
+                          {color}
+                        </Chip>
+                      ) : (
+                        <Chip>sin color</Chip>
+                      )}
+                      {isDeleted && (item as any).eliminadoEn && (
+                        <Text style={styles.metaText}>
+                          Eliminado: {new Date((item as any).eliminadoEn!).toLocaleString()}
+                        </Text>
+                      )}
+                    </View>
                   </View>
-                </View>
 
-                <TouchableOpacity style={[styles.iconBtn, { backgroundColor: '#ECEFF1' }]} onPress={() => askDelete(item)}>
-                  <Ionicons name="trash-outline" size={20} color="#B00020" />
-                </TouchableOpacity>
-              </View>
-            </TouchableOpacity>
-          )}
+                  {isDeleted ? (
+                    <TouchableOpacity style={styles.iconBtn} onPress={() => doRestore(item.id)}>
+                      <Ionicons name="refresh-circle-outline" size={26} color="#2E7D32" />
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity style={styles.iconBtn} onPress={() => askDelete(item)}>
+                      <Ionicons name="trash-outline" size={20} color="#B00020" />
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </TouchableOpacity>
+            );
+          }}
           contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 24 }}
         />
       )}
 
-      {/* Modal arriba para crear/editar */}
+      {/* Modal crear/editar */}
       <Portal>
         <Modal visible={modalVisible} onDismiss={closeModal} contentContainerStyle={styles.modalCard}>
           <Text style={styles.modalTitle}>{editing ? 'Editar estado' : 'Nuevo estado'}</Text>
@@ -254,11 +334,11 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   rowTitle: { fontWeight: 'bold', fontSize: 16, marginBottom: 4 },
-  rowMeta: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  metaText: { color: '#666', marginRight: 6 },
-  iconBtn: { padding: 8, borderRadius: 8 },
+  rowMeta: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  metaText: { color: '#666', marginRight: 6, fontSize: 12 },
+  iconBtn: { padding: 8, borderRadius: 8, backgroundColor: '#ECEFF1' },
   modalCard: { marginHorizontal: 16, backgroundColor: 'white', padding: 16, borderRadius: 12 },
-  modalTitle: { fontWeight: 'bold', fontSize: 18, marginBottom: 8, textAlign: 'center' },
+  modalTitle: { fontWeight: 'bold', fontSize: 18, marginBottom: 8, textAlign: 'left' },
   input: { marginBottom: 8, backgroundColor: '#fff' },
   actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 12, marginTop: 8 },
 });

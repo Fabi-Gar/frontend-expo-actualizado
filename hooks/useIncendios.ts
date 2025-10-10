@@ -9,8 +9,7 @@ import {
   deleteIncendio,
   setEstadoIncendio,
   IncendiosMapResponse,
-  Incendio,
-  Paginated,
+  Incendio
 } from '../services/incendios';
 
 /** =========================
@@ -31,7 +30,7 @@ export function useIncendiosMap(params: MapParams = {}) {
  *  LISTA PAGINADA (/api/incendios)
  *  ========================= */
 export function useIncendios(page = 1, pageSize = 50) {
-  return useQuery<Paginated<Incendio>>({
+  return useQuery<Incendio[]>({
     queryKey: ['incendios', 'list', { page, pageSize }],
     queryFn: () => listIncendios(page, pageSize),
     staleTime: 15_000,
@@ -118,7 +117,7 @@ export function useSetEstadoIncendio() {
   const qc = useQueryClient();
   return useMutation<any, unknown, { incendioId: string; estadoId: number }>({
     mutationKey: ['incendios', 'set-estado'],
-    mutationFn: ({ incendioId, estadoId }) => setEstadoIncendio(incendioId, estadoId),
+    mutationFn: ({ incendioId, estadoId }) => setEstadoIncendio(incendioId, { estadoId: estadoId.toString() }),
     onSuccess: (_res: any, vars: { incendioId: string; estadoId: number }) => {
       qc.invalidateQueries({ queryKey: ['incendios', 'detail', vars.incendioId] });
       qc.invalidateQueries({ queryKey: ['incendios', 'list'] });

@@ -2,42 +2,41 @@
 import React, { useMemo, useState } from 'react';
 import { TouchableOpacity, View, StyleSheet } from 'react-native';
 import { TextInput, HelperText } from 'react-native-paper';
-import SingleSelectModal, { SingleSelectOption } from './SingleSelectModal';
-
-export type Region = { id: string; nombre: string };
+import SingleSelectModal from './SingleSelectModal';
+import { listRegiones } from '../../services/catalogos'; 
 
 type Props = {
-  value: string | null | undefined;                
-  onChange: (id: string | null) => void;           
-  regions: Region[];                              
+  value: string | null | undefined;
+  onChange: (id: string | null) => void;
   error?: string;
   touched?: boolean;
   label?: string;
 };
 
-export default function RegionSelectField({
+export default function RegionSelectFieldRemote({
   value,
   onChange,
-  regions,
   error,
   touched,
   label = 'Región',
 }: Props) {
   const [open, setOpen] = useState(false);
 
-  const options: SingleSelectOption[] = useMemo(
-    () =>
-      regions.map((r) => ({
-        id: r.id,               // mantiene el UUID tal cual
-        label: r.nombre,
-      })),
-    [regions]
-  );
+  const display = useMemo(() => String(value ?? ''), [value]); 
 
-  const display = useMemo(() => {
-    const found = regions.find((r) => r.id === (value ?? ''));
-    return found?.nombre ?? '';
-  }, [regions, value]);
+  const regionesLoader = async ({ q, show }: { q: string; show: 'active' | 'deleted' | 'all' }) => {
+    const params: any = { page: 1, limit: 50 };
+    if (show !== 'active') params.show = show;
+    if (q) params.q = q;
+
+    const resp = await listRegiones(params);
+    const items = Array.isArray(resp) ? resp : resp.items ?? [];
+    return items.map((r: any) => ({
+      id: r.id,
+      label: r.nombre,
+      eliminadoEn: r.eliminadoEn ?? null,
+    }));
+  };
 
   return (
     <>
@@ -50,6 +49,7 @@ export default function RegionSelectField({
             right={<TextInput.Icon icon="menu-down" />}
             style={styles.input}
             error={!!(touched && error)}
+            placeholder="Toca para seleccionar"
           />
         </View>
       </TouchableOpacity>
@@ -60,11 +60,15 @@ export default function RegionSelectField({
       <SingleSelectModal
         visible={open}
         title="Selecciona región"
-        options={options}
         value={value ?? null}
-        onSelect={(id) => onChange(id as string | null)} // devolvemos UUID (string) o null
+        onSelect={(id) => onChange((id as string) ?? null)}
         onClose={() => setOpen(false)}
         allowClear
+        // modo remoto + UX
+        loader={regionesLoader}
+        enableSearch
+        enableShowFilter
+        disableDeletedSelection
       />
     </>
   );

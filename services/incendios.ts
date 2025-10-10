@@ -1,6 +1,7 @@
+// services/incendios.ts
 import { apiAuth } from '../client';
 
-/** ---------- Tipos compartidos ---------- */
+/** ---------- Tipos compartidos (UUID en todas las IDs) ---------- */
 export type UsuarioRef = {
   id: string;
   nombre: string;
@@ -8,17 +9,19 @@ export type UsuarioRef = {
   creadoEn?: string;
 } | null;
 
-export type EstadoRef = { id: number; nombre: string };
+// ★ id ahora es string (UUID); agrega color opcional
+export type EstadoRef = { id: string; nombre: string; color?: string | null };
 
 export type EstadoActual = {
-  id: number;
-  fecha: string;
+  // ★ back devuelve { id, nombre, color, fechaCambio }; lo adaptamos aquí
+  id: string;
+  fecha: string; // mapearemos fechaCambio -> fecha
   estado: EstadoRef;
   cambiadoPor?: UsuarioRef;
 };
 
 export type RegionRef =
-  | { id: number; nombre: string; codigo?: string }
+  | { id: string; nombre: string; codigo?: string }
   | string
   | null;
 
@@ -43,11 +46,11 @@ export type Incendio = {
   ubicacion?: { type: 'Point'; coordinates: [number, number] } | null;
   region?: RegionRef;
   validadoPor?: UsuarioRef;
-  etiquetas?: { id: number; nombre: string }[];
+  etiquetas?: { id: string; nombre: string }[];   // UUID
   reportes?: Reporte[];
   estadoActual?: EstadoActual | null;
-  lat?: number | null; // conveniencia en front
-  lng?: number | null; // compat con front (a partir de lon)
+  lat?: number | null;
+  lng?: number | null; // compat
   lon?: number | null;
   portadaUrl?: string | null;
   thumbnailUrl?: string | null;
@@ -101,32 +104,55 @@ export async function getIncendiosMap(params?: {
 }
 
 /** ---------- Helpers internos ---------- */
+// ★ mapea el estadoActual del back (id/nombre/color/fechaCambio) a tu tipo local
+function normalizeEstadoActual(it: any): EstadoActual | null | undefined {
+  const ea = it?.estadoActual;
+  if (!ea) return ea;
+  // Si el back ya entrega el objeto con 'estado: {id,nombre}', respétalo
+  if (ea.estado) {
+    return {
+      id: ea.id ?? ea.estado?.id ?? '',
+      fecha: ea.fecha ?? ea.fechaCambio ?? new Date().toISOString(),
+      estado: {
+        id: ea.estado?.id ?? ea.id ?? '',
+        nombre: ea.estado?.nombre ?? ea.nombre ?? '',
+        color: ea.estado?.color ?? ea.color ?? null,
+      },
+      cambiadoPor: ea.cambiadoPor ?? null,
+    };
+  }
+  // Si el back entrega { id, nombre, color, fechaCambio }
+  return {
+    id: ea.id,
+    fecha: ea.fechaCambio ?? ea.fecha ?? new Date().toISOString(),
+    estado: { id: ea.id, nombre: ea.nombre, color: ea.color ?? null },
+    cambiadoPor: null,
+  };
+}
+
 function normalizeIncendioCoords(it: Incendio): Incendio {
   const lon = it?.ubicacion?.coordinates?.[0];
   const lat = it?.ubicacion?.coordinates?.[1];
   const normLon = typeof lon === 'number' ? lon : (it as any).lon ?? null;
   const normLat = typeof lat === 'number' ? lat : (it as any).lat ?? null;
-  // poblamos lng desde lon para compatibilidad
-  const normLng = it?.lng != null ? it.lng : normLon;
-  return { ...it, lon: normLon, lat: normLat, lng: normLng as any };
+  const normLng = it?.lng != null ? it.lng : normLon; // compat
+  const estadoActual = normalizeEstadoActual(it as any);
+  return { ...it, lon: normLon, lat: normLat, lng: normLng as any, estadoActual };
 }
 
 /** ---------- CRUD /api/incendios ---------- */
-/** NUEVO: objeto paginado tal cual (si lo necesitas) */
 export async function listIncendiosPaged(page = 1, pageSize = 50): Promise<Paginated<Incendio>> {
   const { data } = await apiAuth.get<Paginated<Incendio>>(`/api/incendios?page=${page}&pageSize=${pageSize}`);
   data.items = (data.items || []).map(normalizeIncendioCoords);
   return data;
 }
 
-/** POR DEFECTO: devuelve SIEMPRE un array plano (para las pantallas) */
 export async function listIncendios(page = 1, pageSize = 50): Promise<Incendio[]> {
   const { data } = await apiAuth.get<Paginated<Incendio>>(`/api/incendios?page=${page}&pageSize=${pageSize}`);
   const arr = (data?.items || []).map(normalizeIncendioCoords);
   return arr;
 }
 
-/** Versión “simple” (array) — alias de listIncendios */
 export async function listIncendiosArray(page = 1, pageSize = 2000): Promise<Incendio[]> {
   return listIncendios(page, pageSize);
 }
@@ -137,7 +163,6 @@ export async function getIncendio(id: string) {
 }
 
 /** ---------- Crear / Actualizar / Eliminar ---------- */
-// El back acepta ubicacion como GeoJSON o como lon/lat (nosotros mandamos GeoJSON).
 export async function createIncendio(payload: Partial<Incendio> & { lat?: number; lng?: number; lon?: number }) {
   const body: any = {
     titulo: payload.titulo,
@@ -156,14 +181,24 @@ export async function createIncendio(payload: Partial<Incendio> & { lat?: number
     body.ubicacion = { type: 'Point', coordinates: [lon, lat] as [number, number] };
   }
 
-  if ((payload as any).regionId != null) body.regionId = (payload as any).regionId;
-  if ((payload as any).etiquetasIds != null) body.etiquetasIds = (payload as any).etiquetasIds;
+  // ★ soporta regionId | region:{id}
+  const regionId = (payload as any).regionId ?? (payload as any).region?.id;
+  if (regionId != null) body.regionId = regionId as string;
+
+  // ★ soporta validadoPorId | validadoPor:{id}
+  const validadoPorId = (payload as any).validadoPorId ?? (payload as any).validadoPor?.id;
+  if (validadoPorId != null) body.validadoPorId = validadoPorId as string;
+
+  if ((payload as any).etiquetasIds != null) body.etiquetasIds = (payload as any).etiquetasIds as string[];
+
+  // ★ estado inicial (opcional)
+  if ((payload as any).estadoInicialId) body.estadoInicialId = (payload as any).estadoInicialId;
+  if ((payload as any).estadoInicialNombre) body.estadoInicialNombre = (payload as any).estadoInicialNombre;
 
   const { data } = await apiAuth.post<Incendio>('/api/incendios', body);
   return normalizeIncendioCoords(data);
 }
 
-// PATCH parcial
 export async function updateIncendio(id: string, payload: Partial<Incendio> & { lat?: number; lng?: number; lon?: number }) {
   const body: any = { ...payload };
 
@@ -177,6 +212,29 @@ export async function updateIncendio(id: string, payload: Partial<Incendio> & { 
     delete body.lat; delete body.lon; delete body.lng;
   }
 
+  // ★ normaliza regionId | region:{id}
+  if ('region' in body && body.region && (body.region as any).id) {
+    body.regionId = (body.region as any).id;
+    delete body.region;
+  }
+  if ('regionId' in body && body.regionId == null) body.regionId = null;
+
+  // ★ normaliza validadoPorId | validadoPor:{id}
+  if ('validadoPor' in body && body.validadoPor && (body.validadoPor as any).id) {
+    body.validadoPorId = (body.validadoPor as any).id;
+    delete body.validadoPor;
+  }
+  if ('validadoPorId' in body && body.validadoPorId == null) body.validadoPorId = null;
+
+  if ('etiquetasIds' in body && !Array.isArray(body.etiquetasIds)) body.etiquetasIds = [];
+
+  // ★ soporte cambio de estado en PATCH
+  // acepta: estadoId | estadoNombre | estado:{id} + notaEstado/fechaEstado/cambiadoPorId
+  if (body.estado && (body.estado as any).id) {
+    body.estadoId = (body.estado as any).id;
+    delete body.estado;
+  }
+
   const { data } = await apiAuth.patch<Incendio>(`/api/incendios/${id}`, body);
   return normalizeIncendioCoords(data);
 }
@@ -186,23 +244,28 @@ export async function deleteIncendio(id: string) {
   return data;
 }
 
-/** ---------- Crear incendio (avanzado, compat) ---------- */
+/** ---------- Crear incendio (avanzado) ---------- */
 export type IncendioCreate = {
   titulo: string;
   descripcion?: string;
-  regionId?: number;
+  regionId?: string;          // UUID (opcional)
   lat: number;
-  lng?: number; // compat
-  lon?: number; // preferido
+  lng?: number;               // compat
+  lon?: number;               // preferido
   visiblePublico?: boolean;
-  etiquetasIds?: number[];
+  etiquetasIds?: string[];    // UUID[]
   fechaInicio?: string;
-  validadoPorId?: string;
-  reporteInicial?: string;
+  validadoPorId?: string;     // UUID
+  reporteInicial?: string;    // texto opcional
+  reporteInicialFotos?: string[]; // ★ NUEVO: URLs (o rutas) de fotos del reporte inicial
+  // ★
+  estadoInicialId?: string;
+  estadoInicialNombre?: string;
 };
 
 export async function createIncendioAvanzado(payload: IncendioCreate) {
   const lon = payload.lon ?? payload.lng;
+
   const body: any = {
     titulo: payload.titulo,
     descripcion: payload.descripcion ?? '',
@@ -216,9 +279,26 @@ export async function createIncendioAvanzado(payload: IncendioCreate) {
     etiquetasIds: payload.etiquetasIds ?? [],
     validadoPorId: payload.validadoPorId,
     reporteInicial: payload.reporteInicial?.trim() || undefined,
+    // ★ estado inicial
+    estadoInicialId: payload.estadoInicialId,
+    estadoInicialNombre: payload.estadoInicialNombre,
   };
 
+  // ★ incluir fotos del reporte inicial si vienen
+  if (Array.isArray(payload.reporteInicialFotos) && payload.reporteInicialFotos.length) {
+    body.reporteInicialFotos = payload.reporteInicialFotos.filter(Boolean);
+  }
+
   const { data } = await apiAuth.post<Incendio>('/api/incendios', body);
+  return normalizeIncendioCoords(data);
+}
+
+/** ---------- Reportes ---------- */
+export async function addReporte(
+  incendioId: string,
+  payload: { descripcion: string; fecha?: string; usuarioId?: string }
+) {
+  const { data } = await apiAuth.post<Incendio>(`/api/incendios/${incendioId}/reportes`, payload);
   return normalizeIncendioCoords(data);
 }
 
@@ -230,26 +310,14 @@ export async function hideIncendio(id: string) {
   return normalizeIncendioCoords(data);
 }
 
-/** Estado del incendio (prioriza el endpoint nuevo /:id/estado) */
-export async function setEstadoIncendio(incendioId: string, estadoId: number) {
-  try {
-    const { data } = await apiAuth.post(`/api/incendios/${incendioId}/estado`, { estadoId });
-    return data;
-  } catch (e) {
-    const attempts = [
-      { url: '/api/estado-incendio', body: { incendioId, estadoId }, method: 'post' as const },
-      { url: '/api/estado-incendio', body: { incendio: incendioId, estado: estadoId }, method: 'post' as const },
-      { url: '/api/estado-incendio/agregar', body: { incendioId, estadoId }, method: 'post' as const },
-    ];
-    let lastError: any;
-    for (const a of attempts) {
-      try {
-        const { data } = await apiAuth[a.method](a.url, a.body);
-        return data;
-      } catch (err) {
-        lastError = err;
-      }
-    }
-    throw lastError;
-  }
+/** ★ Cambiar estado del incendio usando PATCH /api/incendios/:id */
+export async function setEstadoIncendio(incendioId: string, opts: {
+  estadoId?: string;
+  estadoNombre?: string;
+  notaEstado?: string;
+  fechaEstado?: string;
+  cambiadoPorId?: string;
+}) {
+  const { data } = await apiAuth.patch<Incendio>(`/api/incendios/${incendioId}`, opts);
+  return normalizeIncendioCoords(data);
 }

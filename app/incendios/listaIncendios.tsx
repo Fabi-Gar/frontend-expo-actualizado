@@ -32,6 +32,7 @@ function flameColor(item: Incendio) {
 export default function IncendiosList() {
   const [items, setItems] = useState<Incendio[]>([]);
   const [q, setQ] = useState('');
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [user, setUser] = useState<any>(null);
   const [refreshing, setRefreshing] = useState(false);
 
