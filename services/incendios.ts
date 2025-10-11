@@ -31,28 +31,38 @@ export type Reporte = {
   fotos?: { id: string; url: string; orden?: number | null }[];
 };
 
-export type Incendio = {
-  fotos: any;
-  id: string;
-  titulo: string;
-  descripcion?: string | null;
-  fechaInicio?: string | null;
-  fechaFin?: string | null;
-  visiblePublico?: boolean;
-  creadoEn?: string;
-  creadoPor?: UsuarioRef;
-  ubicacion?: { type: 'Point'; coordinates: [number, number] } | null;
-  region?: RegionRef;
-  validadoPor?: UsuarioRef;
-  etiquetas?: { id: string; nombre: string }[];
-  reportes?: Reporte[];
-  estadoActual?: EstadoActual | null;
-  lat?: number | null;
-  lng?: number | null;
-  lon?: number | null;
-  portadaUrl?: string | null;
-  thumbnailUrl?: string | null;
-};
+  export type Incendio = {
+    fotos: any;
+    id: string;
+    titulo: string;
+    descripcion?: string | null;
+    fechaInicio?: string | null;
+    fechaFin?: string | null;
+    visiblePublico?: boolean;
+
+    aprobado?: boolean;
+    aprobadoEn?: string | null;
+    rechazadoEn?: string | null;
+    requiereAprobacion?: boolean;
+    motivoRechazo?: string | null;
+
+    creadoEn?: string;
+    creadoPor?: UsuarioRef;
+    ubicacion?: { type: 'Point'; coordinates: [number, number] } | null;
+    region?: RegionRef;
+    validadoPor?: UsuarioRef;
+    etiquetas?: { id: string; nombre: string }[];
+    reportes?: Reporte[];
+    estadoActual?: EstadoActual | null;
+
+    lat?: number | null;
+    lng?: number | null;
+    lon?: number | null;
+
+    portadaUrl?: string | null;
+    thumbnailUrl?: string | null;
+  };
+
 
 export type Paginated<T> = {
   total: number;
@@ -177,27 +187,39 @@ function normalizeIncendioCoords(it: Incendio): Incendio {
   return { ...it, lon: normLon, lat: normLat, lng: normLng as any, estadoActual };
 }
 
-// 🔄 Adaptador principal: backend -> Incendio (front)
 function fromBackendIncendio(raw: any): Incendio {
   const id = pickId(raw);
+
   const titulo =
     getStr(raw, ['titulo', 'nombre']) || `Incendio ${id?.slice(0, 8)}`;
-  const fechaInicio = getDateLike(raw, ['fechaInicio', 'fecha_inicio', 'inicio_at']) ?? null;
+
+  const fechaInicio =
+    getDateLike(raw, ['fechaInicio', 'fecha_inicio', 'inicio_at']) ?? null;
+
   const fechaFin =
     getDateLike(raw, ['fechaFin', 'fecha_fin', 'fin_at', 'extinguido_at']) ?? null;
+
   const visiblePublico = getBool(raw, ['visiblePublico', 'visible_publico'], true);
 
-const ubicacion =
-  (raw?.centroide && raw.centroide.type === 'Point')
-    ? raw.centroide
-    : (raw?.ubicacion && raw.ubicacion.type === 'Point'
-        ? raw.ubicacion
-        : undefined);
+  // ubicación: prioriza centroide
+  const ubicacion =
+    (raw?.centroide && raw.centroide.type === 'Point')
+      ? raw.centroide
+      : (raw?.ubicacion && raw.ubicacion.type === 'Point'
+          ? raw.ubicacion
+          : undefined);
 
-  const portadaUrl =
-    getStr(raw, ['portadaUrl', 'portada_url']) ?? null;
-  const thumbnailUrl =
-    getStr(raw, ['thumbnailUrl', 'thumbnail_url']) ?? null;
+  const portadaUrl = getStr(raw, ['portadaUrl', 'portada_url']) ?? null;
+  const thumbnailUrl = getStr(raw, ['thumbnailUrl', 'thumbnail_url']) ?? null;
+
+  const aprobadoEn = getDateLike(raw, ['aprobado_en']) ?? null;
+  const rechazadoEn = getDateLike(raw, ['rechazado_en']) ?? null;
+  const requiereAprobacion = !!raw?.requiere_aprobacion;
+  const motivoRechazo = getStr(raw, ['motivo_rechazo']) ?? null;
+
+  const aprobado =
+    raw?.aprobado === true ||
+    (!!aprobadoEn && !rechazadoEn) || false;
 
   const base: Incendio = {
     fotos: raw?.fotos ?? [],
@@ -207,6 +229,13 @@ const ubicacion =
     fechaInicio,
     fechaFin,
     visiblePublico,
+
+    aprobado,
+    aprobadoEn,
+    rechazadoEn,
+    requiereAprobacion,
+    motivoRechazo,
+
     creadoEn: getDateLike(raw, ['creado_en', 'creadoEn']) ?? undefined,
     creadoPor: raw?.creadoPor ?? null,
     ubicacion: ubicacion ?? null,
@@ -221,6 +250,18 @@ const ubicacion =
 
   return normalizeIncendioCoords(base);
 }
+
+export function fechaReferencia(it: Incendio): string | null {
+  return (
+    it.estadoActual?.fecha ??
+    it.aprobadoEn ??
+    it.creadoEn ??
+    it.fechaInicio ??
+    it.fechaFin ??
+    null
+  );
+}
+
 
 /** ---------- CRUD /incendios ---------- */
 export async function listIncendiosPaged(page = 1, pageSize = 50): Promise<Paginated<Incendio>> {

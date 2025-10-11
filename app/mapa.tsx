@@ -36,6 +36,7 @@ import { useIncendiosForMap } from '../hooks/useIncendiosForMap';
 import { useFirmsGT } from '../hooks/useFirmsGT';
 import { useMapRegion } from '../hooks/useMapRegion';
 import { getLatLngFromIncendio, getPinColor, probabilityFromConfidence, probabilityLabel } from '@/app/utils/map';
+import { isAdminUser } from './utils/roles';
 
 /* ======= Constantes locales ======= */
 const AS_HEATMAP = 'heatmap';
@@ -79,9 +80,7 @@ export default function Mapa() {
 
   // ----- Usuario / permisos -----
   const [currentUser, setCurrentUser] = useState<any>(null);
-  const roleId = currentUser?.rol?.id as number | undefined;
-  const roleName = typeof currentUser?.rol?.nombre === 'string' ? currentUser.rol.nombre.toLowerCase() : undefined;
-  const isAdmin = roleId === 2 || (roleName?.includes?.('admin') ?? false);
+  const isAdmin = isAdminUser(currentUser);
 
   // ----- Catálogo de etiquetas + filtros -----
   const [allEtiquetas, setAllEtiquetas] = useState<Etiqueta[]>([]);
@@ -357,10 +356,7 @@ useEffect(() => {
     <View style={styles.container}>
       {/* Badge de depuración */}
       <View style={{ position: 'absolute', top: (insets.top || 0) + 8, left: 8, backgroundColor: '#0008', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 8, zIndex: 4 }}>
-        <Text style={{ color: '#fff', fontSize: 12 }}>
-          Incendios: {items.length} • FIRMS: {firmsGeo?.items?.features?.length ?? 0}{'\n'}
-          Δ: {span.latDelta.toFixed(3)} / {span.lngDelta.toFixed(3)}
-        </Text>
+
       </View>
 
       <MapView

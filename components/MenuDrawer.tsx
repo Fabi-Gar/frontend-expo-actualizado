@@ -18,7 +18,7 @@ interface Props {
   animation: Animated.Value;
   onClose: () => void;
   onNavigate: (route: string) => void;
-  isAdmin?: boolean; // 👈 nuevo
+  isAdmin?: boolean; 
 }
 
 export const MenuDrawer = ({ animation, onClose, onNavigate, isAdmin = false }: Props) => {
