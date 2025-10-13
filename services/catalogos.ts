@@ -21,15 +21,15 @@ export type Departamento = {
   id: UUID;
   nombre: string;
   codigo?: string | null;
-  creadoEn?: string;        
-  actualizadoEn?: string;   
+  creadoEn?: string;
+  actualizadoEn?: string;
 }
 export type Municipio = {
   id: UUID;
   nombre: string;
   departamentoId: UUID;
-  creadoEn?: string;       
-  actualizadoEn?: string;   
+  creadoEn?: string;
+  actualizadoEn?: string;
 }
 /* Catálogos de cierre / soporte */
 export type TipoIncendio = Opcion
@@ -78,7 +78,7 @@ const norm = (r: any): Opcion => ({
 
 /* ============================
  * Estados de incendio (catálogo maestro)
- * Rutas: GET /estados_incendio (+ opcional admin POST/PATCH/DELETE si lo tienes)
+ * Rutas: GET /estados_incendio (+ opcional admin POST/PATCH/DELETE)
  * ============================ */
 export async function getEstadosIncendio(): Promise<EstadoIncendio[]> {
   const { data } = await api.get<{ items: any[] }>(`/estados_incendio`)
@@ -92,7 +92,7 @@ export async function getEstadosIncendio(): Promise<EstadoIncendio[]> {
   }))
 }
 
-// (Opcional admin) — si tu back los expone
+// (Opcional admin)
 export async function createEstadoIncendio(payload: { codigo: string; nombre: string; color?: string | null; orden?: number }) {
   const { data } = await api.post<any>(`/estados_incendio`, payload)
   return data
@@ -187,9 +187,6 @@ export async function deleteInstitucion(id: UUID) {
 
 /* ============================
  * Departamentos / Municipios
- *  - /departamentos
- *  - /departamentos/:id/municipios (GET, POST)
- *  - /municipios/:id (PATCH/DELETE)
  * ============================ */
 export async function listDepartamentos(): Promise<Departamento[]> {
   const { data } = await api.get<{ items: any[] }>(`/departamentos`)
@@ -197,8 +194,8 @@ export async function listDepartamentos(): Promise<Departamento[]> {
     id: d?.departamento_uuid || d?.id || d?.uuid,
     nombre: d?.nombre,
     codigo: d?.codigo ?? null,
-    creadoEn: d?.creado_en ?? d?.creadoEn ?? undefined,          // 👈
-    actualizadoEn: d?.actualizado_en ?? d?.actualizadoEn ?? undefined, // 👈
+    creadoEn: d?.creado_en ?? d?.creadoEn ?? undefined,
+    actualizadoEn: d?.actualizado_en ?? d?.actualizadoEn ?? undefined,
   }))
 }
 export async function createDepartamento(payload: { nombre: string; codigo?: string | null }) {
@@ -214,13 +211,11 @@ export async function deleteDepartamento(id: UUID) {
   return data
 }
 
-
-
 export async function listDepartamentosPaged(params?: {
   page?: number;
   pageSize?: number;
   q?: string;
-  withMunicipios?: boolean; // si quieres traer municipios en el mismo request
+  withMunicipios?: boolean;
 }): Promise<Paginated<Departamento & { municipios?: Municipio[] }>> {
   const qsp = new URLSearchParams()
   if (params?.page) qsp.set('page', String(params.page))
@@ -255,15 +250,14 @@ export async function listDepartamentosPaged(params?: {
   }
 }
 
-
 export async function listMunicipios(departamentoId: UUID): Promise<Municipio[]> {
   const { data } = await api.get<{ items: any[] }>(`/departamentos/${departamentoId}/municipios`)
   return (data?.items ?? []).map((m: any) => ({
     id: m?.municipio_uuid || m?.id || m?.uuid,
     nombre: m?.nombre,
     departamentoId,
-    creadoEn: m?.creado_en ?? m?.creadoEn ?? undefined,          // 👈
-    actualizadoEn: m?.actualizado_en ?? m?.actualizadoEn ?? undefined, // 👈
+    creadoEn: m?.creado_en ?? m?.creadoEn ?? undefined,
+    actualizadoEn: m?.actualizado_en ?? m?.actualizadoEn ?? undefined,
   }))
 }
 export async function createMunicipio(departamentoId: UUID, payload: { nombre: string }) {
@@ -271,7 +265,6 @@ export async function createMunicipio(departamentoId: UUID, payload: { nombre: s
   return data
 }
 export async function updateMunicipio(id: UUID, payload: Partial<{ nombre: string; departamentoId?: UUID }>) {
-  // si cambias de departamento, ajusta backend si soporta moverlo
   const { data } = await api.patch<any>(`/municipios/${id}`, payload)
   return data
 }
@@ -283,6 +276,7 @@ export async function deleteMunicipio(id: UUID) {
 /* ============================
  * Catálogos de cierre /catalogos/*
  * GET + (admin) POST/PATCH/DELETE
+ * (helpers simples)
  * ============================ */
 async function getCatalogo(path: string) {
   const { data } = await api.get<{ items: any[] }>(`/catalogos/${path}`)
@@ -301,59 +295,166 @@ async function deleteCatalogo(path: string, id: UUID) {
   return data
 }
 
-/* Tipos de incendio */
+// -------------------------------
+// Catálogos genéricos (/catalogos/:catalogo)
+// -------------------------------
+
+export type CatalogoItem = {
+  id: UUID;
+  nombre: string;
+  // Solo roles:
+  descripcion?: string | null;
+  creadoEn?: string;
+  actualizadoEn?: string;
+};
+
+export type ListCatalogoParams = {
+  page?: number;
+  pageSize?: number;
+  q?: string;
+};
+
+export async function listCatalogNames(): Promise<string[]> {
+  const { data } = await api.get<{ items: string[] }>('/catalogos');
+  return data?.items ?? [];
+}
+
+export async function listCatalogoItems(
+  catalogo: string,
+  params?: ListCatalogoParams
+): Promise<Paginated<CatalogoItem>> {
+  const q = new URLSearchParams();
+  if (params?.page) q.set('page', String(params.page));
+  if (params?.pageSize) q.set('pageSize', String(params.pageSize));
+  if (params?.q) q.set('q', params.q);
+
+  const { data } = await api.get(`/catalogos/${catalogo}${q.toString() ? `?${q}` : ''}`);
+
+  const items = (data?.items ?? []).map((r: any) => ({
+    id: r?.id ?? r?.uuid,
+    nombre: r?.nombre ?? '',
+    descripcion: typeof r?.descripcion !== 'undefined' ? (r.descripcion ?? null) : undefined,
+    creadoEn: r?.creado_en ?? r?.creadoEn ?? undefined,
+    actualizadoEn: r?.actualizado_en ?? r?.actualizadoEn ?? undefined,
+  })) as CatalogoItem[];
+
+  return {
+    total: data?.total ?? items.length,
+    page: data?.page ?? params?.page ?? 1,
+    pageSize: data?.pageSize ?? params?.pageSize ?? items.length,
+    items,
+  };
+}
+
+export async function getCatalogoItem(catalogo: string, id: UUID): Promise<CatalogoItem> {
+  const { data } = await api.get(`/catalogos/${catalogo}/${id}`);
+  return {
+    id: data?.id ?? data?.uuid,
+    nombre: data?.nombre ?? '',
+    descripcion: typeof data?.descripcion !== 'undefined' ? (data.descripcion ?? null) : undefined,
+    creadoEn: data?.creado_en ?? data?.creadoEn ?? undefined,
+    actualizadoEn: data?.actualizado_en ?? data?.actualizadoEn ?? undefined,
+  };
+}
+
+export async function createCatalogoItem(
+  catalogo: string,
+  payload: { nombre: string; descripcion?: string | null }
+): Promise<CatalogoItem> {
+  const body: any = { nombre: payload.nombre };
+  if (typeof payload.descripcion !== 'undefined') body.descripcion = payload.descripcion; // Solo roles
+
+  const { data } = await api.post(`/catalogos/${catalogo}`, body);
+  return {
+    id: data?.id ?? data?.uuid,
+    nombre: data?.nombre ?? '',
+    descripcion: typeof data?.descripcion !== 'undefined' ? (data.descripcion ?? null) : undefined,
+    creadoEn: data?.creado_en ?? data?.creadoEn ?? undefined,
+    actualizadoEn: data?.actualizado_en ?? data?.actualizadoEn ?? undefined,
+  };
+}
+
+export async function updateCatalogoItem(
+  catalogo: string,
+  id: UUID,
+  payload: Partial<{ nombre: string; descripcion?: string | null }>
+): Promise<CatalogoItem> {
+  const body: any = {};
+  if (typeof payload.nombre === 'string') body.nombre = payload.nombre;
+  if (typeof payload.descripcion !== 'undefined') body.descripcion = payload.descripcion;
+
+  const { data } = await api.patch(`/catalogos/${catalogo}/${id}`, body);
+  return {
+    id: data?.id ?? data?.uuid,
+    nombre: data?.nombre ?? '',
+    descripcion: typeof data?.descripcion !== 'undefined' ? (data.descripcion ?? null) : undefined,
+    creadoEn: data?.creado_en ?? data?.creadoEn ?? undefined,
+    actualizadoEn: data?.actualizado_en ?? data?.actualizadoEn ?? undefined,
+  };
+}
+
+export async function deleteCatalogoItem(catalogo: string, id: UUID) {
+  const { data } = await api.delete<{ ok: boolean }>(`/catalogos/${catalogo}/${id}`);
+  return data;
+}
+
+/* ============================
+ * Wrappers “legacy” ajustados a los nombres NUEVOS del backend
+ * ============================ */
+
+/* Tipos de incendio (YA coincide con back) */
 export const getTiposIncendio = () => getCatalogo('tipos_incendio')
 export const createTipoIncendio = (p: { nombre: string }) => postCatalogo('tipos_incendio', p)
 export const updateTipoIncendio = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('tipos_incendio', id, p)
 export const deleteTipoIncendio = (id: UUID) => deleteCatalogo('tipos_incendio', id)
 
-/* Tipos de propiedad */
+/* Tipos de propiedad (YA coincide con back) */
 export const getTiposPropiedad = () => getCatalogo('tipo_propiedad')
 export const createTipoPropiedad = (p: { nombre: string }) => postCatalogo('tipo_propiedad', p)
 export const updateTipoPropiedad = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('tipo_propiedad', id, p)
 export const deleteTipoPropiedad = (id: UUID) => deleteCatalogo('tipo_propiedad', id)
 
-/* Causas */
-export const getCausas = () => getCatalogo('causas')
-export const createCausa = (p: { nombre: string }) => postCatalogo('causas', p)
-export const updateCausa = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('causas', id, p)
-export const deleteCausa = (id: UUID) => deleteCatalogo('causas', id)
+/* Causas (ANTES era 'causas', AHORA 'causas_catalogo') */
+export const getCausas = () => getCatalogo('causas_catalogo')
+export const createCausa = (p: { nombre: string }) => postCatalogo('causas_catalogo', p)
+export const updateCausa = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('causas_catalogo', id, p)
+export const deleteCausa = (id: UUID) => deleteCatalogo('causas_catalogo', id)
 
-/* Iniciado junto a */
-export const getIniciadoJuntoA = () => getCatalogo('iniciado_junto_a')
-export const createIniciadoJuntoA = (p: { nombre: string }) => postCatalogo('iniciado_junto_a', p)
-export const updateIniciadoJuntoA = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('iniciado_junto_a', id, p)
-export const deleteIniciadoJuntoA = (id: UUID) => deleteCatalogo('iniciado_junto_a', id)
+/* Iniciado junto a (ANTES 'iniciado_junto_a', AHORA 'iniciado_junto_a_catalogo') */
+export const getIniciadoJuntoA = () => getCatalogo('iniciado_junto_a_catalogo')
+export const createIniciadoJuntoA = (p: { nombre: string }) => postCatalogo('iniciado_junto_a_catalogo', p)
+export const updateIniciadoJuntoA = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('iniciado_junto_a_catalogo', id, p)
+export const deleteIniciadoJuntoA = (id: UUID) => deleteCatalogo('iniciado_junto_a_catalogo', id)
 
-/* Medios aéreos */
-export const getMediosAereos = () => getCatalogo('medios_aereos')
-export const createMedioAereo = (p: { nombre: string }) => postCatalogo('medios_aereos', p)
-export const updateMedioAereo = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('medios_aereos', id, p)
-export const deleteMedioAereo = (id: UUID) => deleteCatalogo('medios_aereos', id)
+/* Medios aéreos (ANTES 'medios_aereos', AHORA 'medios_aereos_catalogo') */
+export const getMediosAereos = () => getCatalogo('medios_aereos_catalogo')
+export const createMedioAereo = (p: { nombre: string }) => postCatalogo('medios_aereos_catalogo', p)
+export const updateMedioAereo = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('medios_aereos_catalogo', id, p)
+export const deleteMedioAereo = (id: UUID) => deleteCatalogo('medios_aereos_catalogo', id)
 
-/* Medios terrestres */
-export const getMediosTerrestres = () => getCatalogo('medios_terrestres')
-export const createMedioTerrestre = (p: { nombre: string }) => postCatalogo('medios_terrestres', p)
-export const updateMedioTerrestre = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('medios_terrestres', id, p)
-export const deleteMedioTerrestre = (id: UUID) => deleteCatalogo('medios_terrestres', id)
+/* Medios terrestres (ANTES 'medios_terrestres', AHORA 'medios_terrestres_catalogo') */
+export const getMediosTerrestres = () => getCatalogo('medios_terrestres_catalogo')
+export const createMedioTerrestre = (p: { nombre: string }) => postCatalogo('medios_terrestres_catalogo', p)
+export const updateMedioTerrestre = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('medios_terrestres_catalogo', id, p)
+export const deleteMedioTerrestre = (id: UUID) => deleteCatalogo('medios_terrestres_catalogo', id)
 
-/* Medios acuáticos */
-export const getMediosAcuaticos = () => getCatalogo('medios_acuaticos')
-export const createMedioAcuatico = (p: { nombre: string }) => postCatalogo('medios_acuaticos', p)
-export const updateMedioAcuatico = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('medios_acuaticos', id, p)
-export const deleteMedioAcuatico = (id: UUID) => deleteCatalogo('medios_acuaticos', id)
+/* Medios acuáticos (ANTES 'medios_acuaticos', AHORA 'medios_acuaticos_catalogo') */
+export const getMediosAcuaticos = () => getCatalogo('medios_acuaticos_catalogo')
+export const createMedioAcuatico = (p: { nombre: string }) => postCatalogo('medios_acuaticos_catalogo', p)
+export const updateMedioAcuatico = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('medios_acuaticos_catalogo', id, p)
+export const deleteMedioAcuatico = (id: UUID) => deleteCatalogo('medios_acuaticos_catalogo', id)
 
-/* Abastos */
-export const getAbastos = () => getCatalogo('abastos')
-export const createAbasto = (p: { nombre: string }) => postCatalogo('abastos', p)
-export const updateAbasto = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('abastos', id, p)
-export const deleteAbasto = (id: UUID) => deleteCatalogo('abastos', id)
+/* Abastos (ANTES 'abastos', AHORA 'abastos_catalogo') */
+export const getAbastos = () => getCatalogo('abastos_catalogo')
+export const createAbasto = (p: { nombre: string }) => postCatalogo('abastos_catalogo', p)
+export const updateAbasto = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('abastos_catalogo', id, p)
+export const deleteAbasto = (id: UUID) => deleteCatalogo('abastos_catalogo', id)
 
-/* Técnicas de extinción */
-export const getTecnicasExtincion = () => getCatalogo('tecnicas_extincion')
-export const createTecnicaExtincion = (p: { nombre: string }) => postCatalogo('tecnicas_extincion', p)
-export const updateTecnicaExtincion = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('tecnicas_extincion', id, p)
-export const deleteTecnicaExtincion = (id: UUID) => deleteCatalogo('tecnicas_extincion', id)
+/* Técnicas de extinción (ANTES 'tecnicas_extincion', AHORA 'tecnicas_extincion_catalogo') */
+export const getTecnicasExtincion = () => getCatalogo('tecnicas_extincion_catalogo')
+export const createTecnicaExtincion = (p: { nombre: string }) => postCatalogo('tecnicas_extincion_catalogo', p)
+export const updateTecnicaExtincion = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('tecnicas_extincion_catalogo', id, p)
+export const deleteTecnicaExtincion = (id: UUID) => deleteCatalogo('tecnicas_extincion_catalogo', id)
 
 /* ============================
  * Pre-carga en paralelo

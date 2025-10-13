@@ -27,9 +27,7 @@ import { MapTypeDrawer, DRAWER_WIDTH } from '@/components/MapTypeDrawer';
 import { LeyendaDrawer } from '@/components/LeyendaDrawer';
 import { MenuDrawer } from '@/components/MenuDrawer';
 
-// Si aún NO tienes estos exports en services/catalogos,
-// deja comentado este import y el bloque que intenta cargar etiquetas
-// import { listEtiquetas, type Etiqueta } from '@/services/catalogos';
+
 
 import { getUser } from '@/session';
 import { useIncendiosForMap } from '../hooks/useIncendiosForMap';
@@ -138,19 +136,6 @@ export default function Mapa() {
     return () => sub && sub();
   }, []);
 
-  // ===== Cargar etiquetas (opcional si aún no tienes el endpoint) =====
-  useEffect(() => {
-    (async () => {
-      try {
-        // Si más adelante exportas listEtiquetas() en services/catalogos:
-        // const arr = await listEtiquetas();
-        // setAllEtiquetas(arr || []);
-        setAllEtiquetas([]); // placeholder sin romper la UI
-      } catch {
-        setAllEtiquetas([]);
-      }
-    })();
-  }, []);
 
   // ===== Cargar/recargar incendios =====
   useEffect(() => { reload(); }, [reload]);
@@ -227,7 +212,7 @@ useEffect(() => {
   const handleMenuNavigate = (route: string) => {
     if (route === 'Mapa' || route === 'Ayuda' || route === 'Logout') { closeMenu(); return; }
     if (route === 'listaIncendios') { closeMenu(); router.push('/incendios/listaIncendios'); return; }
-    if (route === 'Etiquetas') { closeMenu(); router.push('/admin/etiquetas'); return; }
+    if (route === 'Catalogo Incendio') { closeMenu(); router.push('/admin/catalogos'); return; }
     if (route === 'Estados') { closeMenu(); router.push('/admin/estados'); return; }
     if (route === 'Regiones') { closeMenu(); router.push('/admin/regiones'); return; }
     if (route === 'Usuarios') { closeMenu(); router.push('/admin/usuarios'); return; }
@@ -276,77 +261,87 @@ useEffect(() => {
           undefined;
 
         return (
-          <Marker
-            key={item.id}
-            coordinate={coord}
-            pinColor={getPinColor(item as any)}
-            tracksViewChanges={false}
-            accessibilityLabel={`Incendio ${item.titulo}`}
-          >
-            <Callout onPress={() => router.push(`/incendios/detalles?id=${item.id}`)}>
-              <View style={{ maxWidth: 220 }}>
-                <Text style={{ fontWeight: 'bold' }}>{item.titulo}</Text>
+        <Marker
+          key={item.id || (item as any).incendio_uuid}
+          coordinate={coord}
+          pinColor={getPinColor(item as any)}
+          tracksViewChanges={false}
+          accessibilityLabel={`Incendio ${item.titulo || (item as any).titulo || 'Sin título'}`}
+        >
+          <Callout onPress={() => router.push(`/incendios/detalles?id=${item.id || (item as any).incendio_uuid}`)}>
+            <View style={{ maxWidth: 240 }}>
+              {/* Título */}
+              <Text style={{ fontWeight: 'bold', fontSize: 15 }}>
+                {(item as any).titulo || 'Sin título'}
+              </Text>
 
-                <TouchableOpacity
-                  accessibilityRole="imagebutton"
-                  accessibilityLabel="Ver foto a pantalla completa"
-                  activeOpacity={0.85}
-                  onPress={(e) => {
-                    e.stopPropagation();
-                    if (cover) debounceTap(() => setViewer({ visible: true, urls: [cover], index: 0 }));
-                  }}
-                >
-                  <Image
-                    source={
-                      cover
-                        ? { uri: cover }
-                        : require('@/assets/images/placeholder_incendio.png')
-                    }
-                    style={{ width: 220, height: 110, borderRadius: 8, marginTop: 6 }}
-                    resizeMode="cover"
-                  />
-                </TouchableOpacity>
+              {/* Imagen (portada/thumbnail/foto[0]) */}
+              {(() => {
+                const cover =
+                  (item as any).portadaUrl ||
+                  (item as any).foto_portada_url ||
+                  (item as any).thumbnailUrl ||
+                  (item as any).fotos?.[0]?.url ||
+                  null;
 
-                <Text>
-                  {typeof item.region === 'object' && item.region !== null ? (item.region as any).nombre : 'Sin región'}
-                </Text>
-                <Text>{(item as any).estadoActual?.estado?.nombre || 'Sin estado'}</Text>
-
-                <View style={{ flexDirection: 'row', gap: 8, marginTop: 8, justifyContent: 'space-between' }}>
+                return (
                   <TouchableOpacity
-                    accessibilityRole="button"
-                    accessibilityLabel="Abrir en mapas"
-                    onPress={(e) => { e.stopPropagation(); debounceTap(() => openInMaps(lat, lng, item.titulo)); }}
-                    style={{ paddingVertical: 6, paddingHorizontal: 8, backgroundColor: '#EEEEEE', borderRadius: 8 }}
+                    accessibilityRole="imagebutton"
+                    accessibilityLabel="Ver foto a pantalla completa"
+                    activeOpacity={0.85}
+                    onPress={(e) => {
+                      e.stopPropagation();
+                      if (cover) debounceTap(() => setViewer({ visible: true, urls: [cover], index: 0 }));
+                    }}
                   >
-                    <Text style={{ fontWeight: '600' }}>Abrir mapas</Text>
+                    <Image
+                      source={
+                        cover
+                          ? { uri: cover }
+                          : require('@/assets/images/placeholder_incendio.png')
+                      }
+                      style={{ width: 240, height: 120, borderRadius: 8, marginTop: 6 }}
+                      resizeMode="cover"
+                    />
                   </TouchableOpacity>
+                );
+              })()}
 
-                  <TouchableOpacity
-                    accessibilityRole="button"
-                    accessibilityLabel="Compartir incendio"
-                    onPress={(e) => { e.stopPropagation(); debounceTap(() => shareIncendio(item.id, lat, lng, item.titulo)); }}
-                    style={{ paddingVertical: 6, paddingHorizontal: 8, backgroundColor: '#EEEEEE', borderRadius: 8 }}
-                  >
-                    <Text style={{ fontWeight: '600' }}>Compartir</Text>
-                  </TouchableOpacity>
+              {/* Descripción */}
+              <Text style={{ marginTop: 6 }} numberOfLines={4}>
+                {(item as any).descripcion || 'Sin descripción'}
+              </Text>
 
-                  <TouchableOpacity
-                    accessibilityRole="button"
-                    accessibilityLabel="Copiar coordenadas"
-                    onPress={(e) => { e.stopPropagation(); debounceTap(() => copyCoords(lat, lng)); }}
-                    style={{ paddingVertical: 6, paddingHorizontal: 8, backgroundColor: '#EEEEEE', borderRadius: 8 }}
-                  >
-                    <Text style={{ fontWeight: '600' }}>Copiar</Text>
-                  </TouchableOpacity>
-                </View>
+              {/* Publicado por */}
+              <Text style={{ marginTop: 6, color: '#666', fontSize: 12 }}>
+                {(() => {
+                  const u = (item as any).creado_por;
+                  const name = [u?.nombre, u?.apellido].filter(Boolean).join(' ');
+                  const by = name || u?.email || 'Anónimo';
+                  return `Publicado por: ${by}`;
+                })()}
+              </Text>
 
-                <View style={{ marginTop: 6, backgroundColor: '#4CAF50', paddingVertical: 6, borderRadius: 8, alignItems: 'center' }}>
-                  <Text style={{ color: '#fff', fontWeight: 'bold' }}>Ver</Text>
-                </View>
+              <Text style={{ color: '#777', fontSize: 12, marginTop: 2 }}>
+                {(item as any).estadoActual?.estado?.nombre || 'Reportado'}
+              </Text>
+
+              {/* Botón Ver */}
+              <View
+                style={{
+                  marginTop: 8,
+                  backgroundColor: '#4CAF50',
+                  paddingVertical: 6,
+                  borderRadius: 8,
+                  alignItems: 'center',
+                }}
+              >
+                <Text style={{ color: '#fff', fontWeight: 'bold' }}>Ver</Text>
               </View>
-            </Callout>
-          </Marker>
+            </View>
+          </Callout>
+        </Marker>
+
         );
       })}
     </>
