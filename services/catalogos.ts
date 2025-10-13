@@ -17,9 +17,20 @@ export type Opcion = { id: UUID; nombre: string }
 export type Rol = { id: UUID; nombre: string; descripcion?: string | null; creadoEn?: string }
 export type Institucion = { id: UUID; nombre: string; creadoEn?: string }
 export type EstadoIncendio = { id: UUID; codigo: string; nombre: string; color?: string | null; orden?: number }
-export type Departamento = { id: UUID; nombre: string; codigo?: string | null }
-export type Municipio = { id: UUID; nombre: string; departamentoId: UUID }
-
+export type Departamento = {
+  id: UUID;
+  nombre: string;
+  codigo?: string | null;
+  creadoEn?: string;        
+  actualizadoEn?: string;   
+}
+export type Municipio = {
+  id: UUID;
+  nombre: string;
+  departamentoId: UUID;
+  creadoEn?: string;       
+  actualizadoEn?: string;   
+}
 /* Catálogos de cierre / soporte */
 export type TipoIncendio = Opcion
 export type TipoPropiedad = Opcion
@@ -186,6 +197,8 @@ export async function listDepartamentos(): Promise<Departamento[]> {
     id: d?.departamento_uuid || d?.id || d?.uuid,
     nombre: d?.nombre,
     codigo: d?.codigo ?? null,
+    creadoEn: d?.creado_en ?? d?.creadoEn ?? undefined,          // 👈
+    actualizadoEn: d?.actualizado_en ?? d?.actualizadoEn ?? undefined, // 👈
   }))
 }
 export async function createDepartamento(payload: { nombre: string; codigo?: string | null }) {
@@ -201,12 +214,56 @@ export async function deleteDepartamento(id: UUID) {
   return data
 }
 
+
+
+export async function listDepartamentosPaged(params?: {
+  page?: number;
+  pageSize?: number;
+  q?: string;
+  withMunicipios?: boolean; // si quieres traer municipios en el mismo request
+}): Promise<Paginated<Departamento & { municipios?: Municipio[] }>> {
+  const qsp = new URLSearchParams()
+  if (params?.page) qsp.set('page', String(params.page))
+  if (params?.pageSize) qsp.set('pageSize', String(params.pageSize))
+  if (params?.q) qsp.set('q', params.q)
+  if (params?.withMunicipios) qsp.set('withMunicipios', '1')
+
+  const { data } = await api.get(`/departamentos?${qsp.toString()}`)
+
+  const items = (data?.items ?? []).map((d: any) => ({
+    id: d?.id ?? d?.departamento_uuid ?? d?.uuid,
+    nombre: d?.nombre ?? '',
+    codigo: d?.codigo ?? null,
+    creadoEn: d?.creado_en ?? d?.creadoEn ?? undefined,
+    actualizadoEn: d?.actualizado_en ?? d?.actualizadoEn ?? undefined,
+    municipios: Array.isArray(d?.municipios)
+      ? d.municipios.map((m: any) => ({
+          id: m?.id ?? m?.municipio_uuid ?? m?.uuid,
+          nombre: m?.nombre ?? '',
+          departamentoId: (d?.id ?? d?.departamento_uuid ?? d?.uuid) as string,
+          creadoEn: m?.creado_en ?? m?.creadoEn ?? undefined,
+          actualizadoEn: m?.actualizado_en ?? m?.actualizadoEn ?? undefined,
+        }))
+      : undefined,
+  }))
+
+  return {
+    total: data?.total ?? items.length,
+    page: data?.page ?? params?.page ?? 1,
+    pageSize: data?.pageSize ?? params?.pageSize ?? items.length,
+    items,
+  }
+}
+
+
 export async function listMunicipios(departamentoId: UUID): Promise<Municipio[]> {
   const { data } = await api.get<{ items: any[] }>(`/departamentos/${departamentoId}/municipios`)
   return (data?.items ?? []).map((m: any) => ({
     id: m?.municipio_uuid || m?.id || m?.uuid,
     nombre: m?.nombre,
     departamentoId,
+    creadoEn: m?.creado_en ?? m?.creadoEn ?? undefined,          // 👈
+    actualizadoEn: m?.actualizado_en ?? m?.actualizadoEn ?? undefined, // 👈
   }))
 }
 export async function createMunicipio(departamentoId: UUID, payload: { nombre: string }) {

@@ -6,7 +6,7 @@ import { WeightedLatLng, probabilityFromConfidence } from '@/app/utils/map';
 
 const AS_FIRMS_ENABLED = 'firms_enabled';
 const AS_FIRMS_DAYS = 'firms_days';
-const AS_FIRMS_CACHE_PREFIX = 'firms_gt_cache_v2_d';
+const AS_FIRMS_CACHE_PREFIX = 'firms_gt_cache_v3_d';
 const FIRMS_CACHE_TTL = 30 * 60 * 1000; // 30 min
 
 // BBOX Guatemala por defecto (w,s,e,n)
@@ -98,6 +98,7 @@ export function useFirmsGT(opts: UseFirmsOptions = {}) {
     bbox = GT_BBOX,
     initialEnabled = true,
     initialDaysWindow = 3,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     products = DEFAULT_PRODUCTS, // por si luego lo usas
   } = opts;
 

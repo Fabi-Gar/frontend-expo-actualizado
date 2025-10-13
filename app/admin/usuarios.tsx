@@ -1,46 +1,29 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+// app/admin/usuarios.tsx
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View,
-  StyleSheet,
-  FlatList,
-  TouchableOpacity,
-  RefreshControl,
-  Alert,
+  View, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Alert,
 } from 'react-native';
 import {
-  Appbar,
-  TextInput,
-  Text,
-  ActivityIndicator,
-  Portal,
-  Modal,
-  Button,
-  Switch,
-  Menu,
+  Appbar, TextInput, Text, ActivityIndicator, Portal, Modal, Button, Switch, Menu,
 } from 'react-native-paper';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 
+import { listRoles, Rol as Role } from '../../services/catalogos';
 import {
   listUsers,
   createUser,
   updateUser,
   deleteUser,
-  restoreUser,
   UserAccount,
-  listRoles,
-  Role,
- 
-} from '../../services/catalogos';
+} from '../../services/usuarios';
 
-type ViewMode = 'active' | 'deleted' | 'all';
-
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 type UsersPaged = {
   items: UserAccount[];
   page: number;
-  limit: number;
+  pageSize: number;
   total: number;
-  hasMore: boolean;
 };
 
 export default function UsuariosIndex() {
@@ -50,74 +33,64 @@ export default function UsuariosIndex() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Paginación
+  // Paginación (backend tiene page/pageSize)
   const [page, setPage] = useState(1);
-  const [limit] = useState(20);
+  const [pageSize] = useState(20);
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
 
-  // Vista (Activos/Eliminados/Todos)
-  const [viewMode, setViewMode] = useState<ViewMode>('active');
+  // (Opcional) menú de acciones futuras
   const [menuVisible, setMenuVisible] = useState(false);
 
   // Modal
   const [modalVisible, setModalVisible] = useState(false);
   const [editing, setEditing] = useState<UserAccount | null>(null);
   const [formNombre, setFormNombre] = useState('');
+  const [formApellido, setFormApellido] = useState('');
   const [formCorreo, setFormCorreo] = useState('');
+  const [formTelefono, setFormTelefono] = useState<string>('');
   const [formPassword, setFormPassword] = useState('');
-  const [formRolId, setFormRolId] = useState<string | null>(null); // UUID o null
-  const [formActivo, setFormActivo] = useState<boolean>(true);
+  const [formRolId, setFormRolId] = useState<string | null>(null);
+  const [formInstitucionId, setFormInstitucionId] = useState<string | null>(null);
+  const [formIsAdmin, setFormIsAdmin] = useState<boolean>(false);
 
   // Debounce búsqueda (300ms)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const scheduleLoad = (fn: () => void) => {
+  const schedule = (fn: () => void) => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(fn, 300);
   };
 
-  // Carga inicial / cambios de vista o búsqueda (página 1)
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const show =
-        viewMode === 'deleted' ? { show: 'deleted' as const }
-        : viewMode === 'all' ? { show: 'all' as const }
-        : undefined;
-
-      const resp = await listUsers({ ...show, page: 1, limit, q }) as UsersPaged;
+      const resp = await listUsers({ page: 1, pageSize });
       setItems(resp.items || []);
-      setHasMore(!!resp.hasMore);
+      setHasMore((resp.page * resp.pageSize) < (resp.total ?? 0));
       setPage(1);
 
-      const rs = await listRoles({ page: 1, limit: 100 }); 
+      const rs = await listRoles(1, 100);
       setRoles(rs.items || []);
     } catch (e: any) {
-      Alert.alert('Error', e?.response?.data?.error || 'No se pudieron cargar usuarios');
+      Alert.alert('Error', e?.response?.data?.message || 'No se pudieron cargar usuarios');
     } finally {
       setLoading(false);
     }
-  }, [viewMode, limit, q]);
+  }, [pageSize]);
 
-  // Cargar más (append)
   const loadMore = useCallback(async () => {
     if (loadingMore || loading || !hasMore) return;
     try {
       setLoadingMore(true);
-      const show =
-        viewMode === 'deleted' ? { show: 'deleted' as const }
-        : viewMode === 'all' ? { show: 'all' as const }
-        : undefined;
-
-      const nextPage = page + 1;
-      const resp = await listUsers({ ...show, page: nextPage, limit, q }) as UsersPaged;
+      const next = page + 1;
+      const resp = await listUsers({ page: next, pageSize });
       setItems(prev => [...prev, ...(resp.items || [])]);
-      setHasMore(!!resp.hasMore);
-      setPage(nextPage);
+      setHasMore((resp.page * resp.pageSize) < (resp.total ?? 0));
+      setPage(next);
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, loading, hasMore, viewMode, page, limit, q]);
+  }, [loadingMore, loading, hasMore, page, pageSize]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -128,35 +101,60 @@ export default function UsuariosIndex() {
     }
   }, [load]);
 
-  useEffect(() => {
-    scheduleLoad(load);
-  }, [viewMode, q, load]);
+  useEffect(() => { schedule(load); }, [load]);
+
+  // Búsqueda en cliente (filtro por nombre/correo/rol)
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return items;
+    return items.filter(u => {
+      const bag = [
+        u.nombre || '',
+        u.apellido || '',
+        u.correo || '',
+        u.rol?.nombre || '',
+        u.institucion?.nombre || '',
+      ].join(' ').toLowerCase();
+      return bag.includes(s);
+    });
+  }, [items, q]);
 
   // --- Crear / Editar ---
   const openCreate = () => {
     setEditing(null);
     setFormNombre('');
+    setFormApellido('');
     setFormCorreo('');
-    setFormPassword(''); 
+    setFormTelefono('');
+    setFormPassword('');
     setFormRolId(null);
-    setFormActivo(true);
+    setFormInstitucionId(null);
+    setFormIsAdmin(false);
     setModalVisible(true);
   };
 
   const openEdit = (u: UserAccount) => {
-    if (u.eliminadoEn) return; 
     setEditing(u);
     setFormNombre(u.nombre || '');
+    setFormApellido(u.apellido || '');
     setFormCorreo(u.correo || '');
-    setFormPassword(''); 
+    setFormTelefono(u.telefono || '');
+    setFormPassword('');
     setFormRolId(u.rol?.id || null);
-    setFormActivo(u.activo ?? true);
+    setFormInstitucionId(u.institucion?.id || null);
+    setFormIsAdmin(!!u.isAdmin);
     setModalVisible(true);
   };
 
   const saveFromModal = async () => {
-    if (!formNombre.trim() || !formCorreo.trim()) {
-      Alert.alert('Validación', 'Nombre y correo son obligatorios');
+    const nombre = formNombre.trim();
+    const apellido = formApellido.trim();
+    const correo = formCorreo.trim();
+    const telefono = formTelefono?.trim() || undefined;
+    const password = formPassword.trim();
+
+    if (!nombre || !apellido || !correo) {
+      Alert.alert('Validación', 'Nombre, apellido y correo son obligatorios');
       return;
     }
 
@@ -164,47 +162,52 @@ export default function UsuariosIndex() {
       setLoading(true);
 
       if (editing) {
-        const payload: any = {
-          nombre: formNombre.trim(),
-          correo: formCorreo.trim(),
-          rolId: formRolId,        
-          activo: formActivo,
-        };
-        if (formPassword.trim()) {
-          payload.password = formPassword.trim();
-        }
-        await updateUser(editing.id, payload);
+        await updateUser(editing.id, {
+          nombre,
+          apellido,
+          email: correo,
+          telefono: telefono ?? null,
+          newPassword: password || undefined,
+          rolId: formRolId || undefined,
+          institucionId: formInstitucionId === null ? null : formInstitucionId || undefined,
+          isAdmin: formIsAdmin,
+        });
       } else {
-        if (!formPassword.trim()) {
+        if (!password) {
           Alert.alert('Validación', 'La contraseña es obligatoria para crear');
           setLoading(false);
           return;
         }
+        if (!formRolId) {
+          Alert.alert('Validación', 'Debes seleccionar un rol');
+          setLoading(false);
+          return;
+        }
         await createUser({
-          nombre: formNombre.trim(),
-          correo: formCorreo.trim(),
-          password: formPassword.trim(),
-          rolId: formRolId || undefined, 
+          nombre,
+          apellido,
+          email: correo,
+          password,
+          rolId: formRolId,
+          telefono: telefono ?? null,
+          institucionId: formInstitucionId ?? null,
+          isAdmin: formIsAdmin,
         });
       }
 
       setModalVisible(false);
       await load();
     } catch (e: any) {
-      const msg =
-        e?.response?.data?.error ||
-        e?.response?.data?.message ||
-        'No se pudo guardar';
+      const msg = e?.response?.data?.message || e?.response?.data?.error || 'No se pudo guardar';
       Alert.alert('Error', msg);
     } finally {
       setLoading(false);
     }
   };
 
-  // --- Eliminar / Restaurar / Activar ---
+  // --- Eliminar (soft) ---
   const askDelete = (u: UserAccount) => {
-    if (u.eliminadoEn) return;
-    Alert.alert('Eliminar', `¿Eliminar el usuario "${u.nombre}"?`, [
+    Alert.alert('Eliminar', `¿Eliminar el usuario "${u.nombre} ${u.apellido}"?`, [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Eliminar', style: 'destructive', onPress: () => doDelete(u.id) },
     ]);
@@ -220,72 +223,32 @@ export default function UsuariosIndex() {
     }
   };
 
-  const doRestore = async (id: string) => {
-    try {
-      setLoading(true);
-      await restoreUser(id);
-      await load();
-    } catch (e: any) {
-      Alert.alert('Error', e?.response?.data?.error || 'No se pudo restaurar');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const doActivate = async (id: string) => {
-    try {
-      setLoading(true);
-      await updateUser(id, { activo: true }); // activar inactivo
-      await load();
-    } catch (e: any) {
-      Alert.alert('Error', e?.response?.data?.error || 'No se pudo activar');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   return (
     <View style={styles.root}>
       <Appbar.Header mode="small">
         <Appbar.BackAction onPress={() => router.back()} />
-        <Appbar.Content title={
-          viewMode === 'deleted' ? 'Usuarios eliminados'
-          : viewMode === 'all' ? 'Usuarios (Todos)'
-          : 'Usuarios (Admin)'
-        } />
+        <Appbar.Content title="Usuarios (Admin)" />
 
-        {/* Menú de vista */}
+        {/* Menú reservado por si luego agregas filtros server-side */}
         <Menu
           visible={menuVisible}
           onDismiss={() => setMenuVisible(false)}
           anchor={<Appbar.Action icon="filter-variant" onPress={() => setMenuVisible(true)} />}
         >
           <Menu.Item
-            onPress={() => { setViewMode('active'); setMenuVisible(false); }}
-            title="Activos"
-            leadingIcon={viewMode === 'active' ? 'check' : undefined}
-          />
-          <Menu.Item
-            onPress={() => { setViewMode('deleted'); setMenuVisible(false); }}
-            title="Eliminados"
-            leadingIcon={viewMode === 'deleted' ? 'check' : undefined}
-          />
-          <Menu.Item
-            onPress={() => { setViewMode('all'); setMenuVisible(false); }}
-            title="Todos"
-            leadingIcon={viewMode === 'all' ? 'check' : undefined}
+            onPress={() => { setMenuVisible(false); }}
+            title="Sin filtros"
+            leadingIcon="check"
           />
         </Menu>
 
-        {(viewMode !== 'deleted') && (
-          <Appbar.Action icon="plus" onPress={openCreate} />
-        )}
+        <Appbar.Action icon="plus" onPress={openCreate} />
       </Appbar.Header>
 
       <View style={styles.searchBox}>
         <TextInput
           mode="outlined"
-          placeholder="Buscar usuario"
+          placeholder="Buscar por nombre, correo, rol o institución"
           value={q}
           onChangeText={setQ}
           right={<TextInput.Icon icon="magnify" />}
@@ -293,51 +256,29 @@ export default function UsuariosIndex() {
       </View>
 
       {loading && items.length === 0 ? (
-        <View style={styles.center}><ActivityIndicator /></View>
+        <View style={styles.center}><ActivityIndicator /><Text>Cargando…</Text></View>
       ) : (
         <FlatList
-          data={items}
+          data={filtered}
           keyExtractor={(x) => String(x.id)}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
           ItemSeparatorComponent={() => <View style={styles.sep} />}
-          renderItem={({ item }) => {
-            const isDeleted = !!item.eliminadoEn;
-            return (
-              <TouchableOpacity onPress={() => (!isDeleted) && openEdit(item)}>
-                <View style={[styles.row, isDeleted && { opacity: 0.85 }]}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.rowTitle}>
-                      {item.nombre}{isDeleted ? ' (Eliminado)' : ''}
-                    </Text>
-                    <Text>{item.correo}</Text>
-                    <Text style={styles.metaText}>
-                      {item.rol?.nombre ?? 'Sin rol'} · {item.activo ? 'Activo' : 'Inactivo'}
-                    </Text>
-                    {isDeleted && item.eliminadoEn && (
-                      <Text style={styles.deletedAt}>
-                        Eliminado: {new Date(item.eliminadoEn).toLocaleString()}
-                      </Text>
-                    )}
-                  </View>
-
-                  {/* Acciones contextuales */}
-                  {isDeleted ? (
-                    <TouchableOpacity onPress={() => doRestore(item.id)}>
-                      <Ionicons name="refresh-circle-outline" size={26} color="#2E7D32" />
-                    </TouchableOpacity>
-                  ) : item.activo ? (
-                    <TouchableOpacity onPress={() => askDelete(item)}>
-                      <Ionicons name="trash-outline" size={20} color="#B00020" />
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity onPress={() => doActivate(item.id)}>
-                      <Ionicons name="checkmark-circle-outline" size={24} color="#1976D2" />
-                    </TouchableOpacity>
-                  )}
+          renderItem={({ item }) => (
+            <TouchableOpacity onPress={() => openEdit(item)}>
+              <View style={styles.row}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rowTitle}>{item.nombre} {item.apellido}</Text>
+                  <Text>{item.correo}</Text>
+                  <Text style={styles.metaText}>
+                    {item.rol?.nombre ?? 'Sin rol'}{item.isAdmin ? ' · Admin' : ''}{item.institucion?.nombre ? ` · ${item.institucion.nombre}` : ''}
+                  </Text>
                 </View>
-              </TouchableOpacity>
-            );
-          }}
+                <TouchableOpacity onPress={() => askDelete(item)}>
+                  <Ionicons name="trash-outline" size={20} color="#B00020" />
+                </TouchableOpacity>
+              </View>
+            </TouchableOpacity>
+          )}
           onEndReachedThreshold={0.4}
           onEndReached={loadMore}
           ListFooterComponent={
@@ -352,29 +293,19 @@ export default function UsuariosIndex() {
           windowSize={7}
           removeClippedSubviews
           contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 24 }}
+          ListEmptyComponent={<View style={styles.center}><Text>No hay usuarios</Text></View>}
         />
       )}
 
-      {/* Modal */}
+      {/* Modal crear/editar */}
       <Portal>
         <Modal visible={modalVisible} onDismiss={() => setModalVisible(false)} contentContainerStyle={styles.modalCard}>
           <Text style={styles.modalTitle}>{editing ? 'Editar usuario' : 'Nuevo usuario'}</Text>
 
-          <TextInput
-            label="Nombre"
-            value={formNombre}
-            onChangeText={setFormNombre}
-            style={styles.input}
-          />
-
-          <TextInput
-            label="Correo"
-            value={formCorreo}
-            onChangeText={setFormCorreo}
-            autoCapitalize="none"
-            keyboardType="email-address"
-            style={styles.input}
-          />
+          <TextInput label="Nombre" value={formNombre} onChangeText={setFormNombre} style={styles.input} />
+          <TextInput label="Apellido" value={formApellido} onChangeText={setFormApellido} style={styles.input} />
+          <TextInput label="Correo" value={formCorreo} onChangeText={setFormCorreo} autoCapitalize="none" keyboardType="email-address" style={styles.input} />
+          <TextInput label="Teléfono (opcional)" value={formTelefono} onChangeText={setFormTelefono} keyboardType="phone-pad" style={styles.input} />
 
           <TextInput
             label={editing ? 'Nueva contraseña (opcional)' : 'Contraseña'}
@@ -385,33 +316,22 @@ export default function UsuariosIndex() {
             placeholder={editing ? 'Dejar vacío para no cambiar' : undefined}
           />
 
-          <View style={styles.switchRow}>
-            <Text>Activo</Text>
-            <Switch value={formActivo} onValueChange={setFormActivo} />
-          </View>
-
           <Text style={{ marginTop: 8, marginBottom: 4 }}>Rol:</Text>
-
-          {/* Opción sin rol */}
-          <TouchableOpacity style={styles.rolOption} onPress={() => setFormRolId(null)}>
-            <Ionicons
-              name={formRolId === null ? 'radio-button-on' : 'radio-button-off'}
-              size={20}
-              color="#4CAF50"
-            />
-            <Text style={{ marginLeft: 6 }}>Sin rol</Text>
-          </TouchableOpacity>
-
+          {/* Sin rol no está soportado en create (backend requiere rol_uuid). Para editar, puedes dejarlo igual */}
           {roles.map(r => (
             <TouchableOpacity key={r.id} style={styles.rolOption} onPress={() => setFormRolId(r.id)}>
               <Ionicons
                 name={formRolId === r.id ? 'radio-button-on' : 'radio-button-off'}
                 size={20}
-                color="#4CAF50"
               />
               <Text style={{ marginLeft: 6 }}>{r.nombre}</Text>
             </TouchableOpacity>
           ))}
+
+          <View style={styles.switchRow}>
+            <Text>Es administrador</Text>
+            <Switch value={formIsAdmin} onValueChange={setFormIsAdmin} />
+          </View>
 
           <View style={styles.actions}>
             <Button onPress={() => setModalVisible(false)}>Cancelar</Button>
@@ -431,7 +351,6 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', padding: 12, borderRadius: 12, backgroundColor: '#FAFAFA' },
   rowTitle: { fontWeight: 'bold', fontSize: 16 },
   metaText: { color: '#666' },
-  deletedAt: { color: '#9E9E9E', marginTop: 4, fontSize: 12 },
   modalCard: { margin: 16, backgroundColor: 'white', padding: 16, borderRadius: 12 },
   modalTitle: { fontWeight: 'bold', fontSize: 18, marginBottom: 8 },
   input: { marginBottom: 8 },

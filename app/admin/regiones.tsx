@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+// app/admin/departamentos/index.tsx
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   StyleSheet,
   FlatList,
-  TouchableOpacity,
   RefreshControl,
   Alert,
 } from 'react-native';
@@ -16,172 +16,122 @@ import {
   Modal,
   Button,
   HelperText,
-  Chip,
-  Menu,
+  Divider,
+  IconButton,
 } from 'react-native-paper';
-import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 
 import {
-  listRegiones,
-  createRegion,
-  updateRegion,
-  deleteRegion,
-  restoreRegion,
-  Region,
-} from '../../services/catalogos';
+  listDepartamentos,
+  createDepartamento,
+  updateDepartamento,
+  deleteDepartamento,
+  listMunicipios,
+  createMunicipio,
+  updateMunicipio,
+  deleteMunicipio,
+  type Departamento,
+  type Municipio,
+} from '@/services/catalogos';
 
-type ViewMode = 'active' | 'deleted' | 'all';
-
-// si no exportaste RegionsPaged desde el service, usa este local:
-type RegionsPaged = {
-  items: Region[];
-  page: number;
-  limit: number;
-  total: number;
-  hasMore: boolean;
-};
-
-export default function RegionesIndex() {
-  const [items, setItems] = useState<Region[]>([]);
+export default function DepartamentosIndex() {
+  // ====== Departamentos ======
+  const [items, setItems] = useState<Departamento[]>([]);
   const [q, setQ] = useState('');
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
-  // paginación
-  const [page, setPage] = useState(1);
-  const [limit] = useState(20);
-  const [hasMore, setHasMore] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
+  // Modal Depto
+  const [deptModalVisible, setDeptModalVisible] = useState(false);
+  const [editingDept, setEditingDept] = useState<Departamento | null>(null);
+  const [formDeptNombre, setFormDeptNombre] = useState('');
 
-  // vista
-  const [viewMode, setViewMode] = useState<ViewMode>('active');
-  const [menuVisible, setMenuVisible] = useState(false);
+  // ====== Municipios (modal de gestión) ======
+  const [muniModalVisible, setMuniModalVisible] = useState(false);
+  const [currentDepto, setCurrentDepto] = useState<Departamento | null>(null);
+  const [munis, setMunis] = useState<Municipio[]>([]);
+  const [muniLoading, setMuniLoading] = useState(false);
 
-  // modal
-  const [modalVisible, setModalVisible] = useState(false);
-  const [editing, setEditing] = useState<Region | null>(null);
-  const [formNombre, setFormNombre] = useState('');
-  const [formCodigo, setFormCodigo] = useState('');
-
-  // debounce búsqueda
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const scheduleLoad = (fn: () => void) => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(fn, 300);
-  };
-
-  // carga inicial / cambios de vista o búsqueda (página 1)
-  const load = useCallback(async () => {
+  // Modal Crear/Editar Muni
+  const [editingMuni, setEditingMuni] = useState<Municipio | null>(null);
+  const [formMuniNombre, setFormMuniNombre] = useState('');
+  const muniInputRef = useRef<any>(null);
+  // ====== Carga departamentos ======
+  const loadDeptos = useCallback(async () => {
     try {
       setLoading(true);
-      const show =
-        viewMode === 'deleted' ? { show: 'deleted' as const }
-        : viewMode === 'all' ? { show: 'all' as const }
-        : undefined;
-
-      const resp = await listRegiones({ ...show, page: 1, limit, q }) as RegionsPaged;
-      setItems(resp.items || []);
-      setHasMore(!!resp.hasMore);
-      setPage(1);
+      // Tu service actual trae todo (sin paginación ni q). Hacemos filtro local:
+      const arr = await listDepartamentos();
+      setItems(arr || []);
     } catch (e: any) {
-      Alert.alert('Error', e?.response?.data?.error || 'No se pudieron cargar regiones');
+      Alert.alert('Error', e?.response?.data?.error || 'No se pudieron cargar departamentos');
     } finally {
       setLoading(false);
     }
-  }, [viewMode, limit, q]);
+  }, []);
 
-  // cargar más (append)
-  const loadMore = useCallback(async () => {
-    if (loadingMore || loading || !hasMore) return;
-    try {
-      setLoadingMore(true);
-      const show =
-        viewMode === 'deleted' ? { show: 'deleted' as const }
-        : viewMode === 'all' ? { show: 'all' as const }
-        : undefined;
-
-      const nextPage = page + 1;
-      const resp = await listRegiones({ ...show, page: nextPage, limit, q }) as RegionsPaged;
-      setItems(prev => [...prev, ...(resp.items || [])]);
-      setHasMore(!!resp.hasMore);
-      setPage(nextPage);
-    } catch (e: any) {
-      Alert.alert('Error', e?.response?.data?.error || 'No se pudieron cargar más regiones');
-    } finally {
-      setLoadingMore(false);
-    }
-  }, [loadingMore, loading, hasMore, viewMode, page, limit, q]);
+  useEffect(() => {
+    loadDeptos();
+  }, [loadDeptos]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      await load();
+      await loadDeptos();
     } finally {
       setRefreshing(false);
     }
-  }, [load]);
+  }, [loadDeptos]);
 
-  // ejecutar load cuando cambie viewMode o q (debounce para q)
-  useEffect(() => {
-    scheduleLoad(load);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewMode, q]);
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return items;
+    return items.filter((d) => (d.nombre || '').toLowerCase().includes(s));
+  }, [items, q]);
 
-  // --- crear / editar ---
-  const openCreate = () => {
-    setEditing(null);
-    setFormNombre('');
-    setFormCodigo('');
-    setModalVisible(true);
+  // ====== Crear/Editar Depto ======
+  const openCreateDept = () => {
+    setEditingDept(null);
+    setFormDeptNombre('');
+    setDeptModalVisible(true);
   };
-
-  const openEdit = (r: Region) => {
-    if ((r as any).eliminadoEn) return; // si manejas eliminadoEn en region
-    setEditing(r);
-    setFormNombre(r?.nombre || '');
-    setFormCodigo(r?.codigo || '');
-    setModalVisible(true);
+  const openEditDept = (d: Departamento) => {
+    setEditingDept(d);
+    setFormDeptNombre(d.nombre || '');
+    setDeptModalVisible(true);
   };
-
-  const saveFromModal = async () => {
-    const nombre = formNombre.trim();
-    const codigo = formCodigo.trim();
-
+  const saveDept = async () => {
+    const nombre = formDeptNombre.trim();
     if (!nombre) {
       Alert.alert('Validación', 'El nombre es requerido');
       return;
     }
-
     try {
       setLoading(true);
-      if (editing) {
-        await updateRegion(editing.id, { nombre, codigo: codigo || undefined });
+      if (editingDept) {
+        await updateDepartamento(editingDept.id, { nombre });
       } else {
-        await createRegion({ nombre, codigo: codigo || undefined });
+        await createDepartamento({ nombre });
       }
-      setModalVisible(false);
-      await load();
+      setDeptModalVisible(false);
+      await loadDeptos();
     } catch (e: any) {
-      Alert.alert('Error', e?.response?.data?.error || 'No se pudo guardar');
+      Alert.alert('Error', e?.response?.data?.error || 'No se pudo guardar el departamento');
     } finally {
       setLoading(false);
     }
   };
-
-  // --- eliminar / restaurar ---
-  const askDelete = (r: Region) => {
-    Alert.alert('Eliminar', `¿Eliminar la región "${r.nombre}"?`, [
+  const askDeleteDept = (d: Departamento) => {
+    Alert.alert('Eliminar', `¿Eliminar el departamento "${d.nombre}"?`, [
       { text: 'Cancelar', style: 'cancel' },
-      { text: 'Eliminar', style: 'destructive', onPress: () => doDelete(r.id) },
+      { text: 'Eliminar', style: 'destructive', onPress: () => doDeleteDept(d.id) },
     ]);
   };
-
-  const doDelete = async (id: string) => {
+  const doDeleteDept = async (id: string) => {
     try {
       setLoading(true);
-      await deleteRegion(id);
-      await load();
+      await deleteDepartamento(id);
+      await loadDeptos();
     } catch (e: any) {
       Alert.alert('Error', e?.response?.data?.error || 'No se pudo eliminar');
     } finally {
@@ -189,15 +139,74 @@ export default function RegionesIndex() {
     }
   };
 
-  const doRestore = async (id: string) => {
+  // ====== Municipios (gestión) ======
+  const openMunis = async (d: Departamento) => {
+    setCurrentDepto(d);
+    setMuniModalVisible(true);
+    setEditingMuni(null);
+    setFormMuniNombre('');
     try {
-      setLoading(true);
-      await restoreRegion(id);
-      await load();
+      setMuniLoading(true);
+      const arr = await listMunicipios(d.id);
+      setMunis(arr || []);
     } catch (e: any) {
-      Alert.alert('Error', e?.response?.data?.error || 'No se pudo restaurar');
+      Alert.alert('Error', e?.response?.data?.error || 'No se pudieron cargar municipios');
     } finally {
-      setLoading(false);
+      setMuniLoading(false);
+    }
+  };
+
+  const startCreateMuni = () => {
+    setEditingMuni(null);
+    setFormMuniNombre('');
+    setTimeout(() => muniInputRef.current?.focus?.(), 100);
+  };
+  const startEditMuni = (m: Municipio) => {
+    setEditingMuni(m);
+    setFormMuniNombre(m.nombre || '');
+    setTimeout(() => muniInputRef.current?.focus?.(), 100);
+  };
+  const saveMuni = async () => {
+    const nombre = formMuniNombre.trim();
+    if (!nombre) {
+      Alert.alert('Validación', 'El nombre del municipio es requerido');
+      return;
+    }
+    if (!currentDepto) return;
+    try {
+      setMuniLoading(true);
+      if (editingMuni) {
+        await updateMunicipio(editingMuni.id, { nombre, departamentoId: currentDepto.id });
+      } else {
+        await createMunicipio(currentDepto.id, { nombre });
+      }
+      const arr = await listMunicipios(currentDepto.id);
+      setMunis(arr || []);
+      setEditingMuni(null);
+      setFormMuniNombre('');
+    } catch (e: any) {
+      Alert.alert('Error', e?.response?.data?.error || 'No se pudo guardar el municipio');
+    } finally {
+      setMuniLoading(false);
+    }
+  };
+  const askDeleteMuni = (m: Municipio) => {
+    Alert.alert('Eliminar', `¿Eliminar el municipio "${m.nombre}"?`, [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Eliminar', style: 'destructive', onPress: () => doDeleteMuni(m.id) },
+    ]);
+  };
+  const doDeleteMuni = async (id: string) => {
+    if (!currentDepto) return;
+    try {
+      setMuniLoading(true);
+      await deleteMunicipio(id);
+      const arr = await listMunicipios(currentDepto.id);
+      setMunis(arr || []);
+    } catch (e: any) {
+      Alert.alert('Error', e?.response?.data?.error || 'No se pudo eliminar el municipio');
+    } finally {
+      setMuniLoading(false);
     }
   };
 
@@ -205,44 +214,14 @@ export default function RegionesIndex() {
     <View style={styles.root}>
       <Appbar.Header mode="small">
         <Appbar.BackAction onPress={() => router.back()} />
-        <Appbar.Content title={
-          viewMode === 'deleted' ? 'Regiones eliminadas'
-          : viewMode === 'all' ? 'Regiones (Todas)'
-          : 'Regiones (Admin)'
-        } />
-        {/* menú vista */}
-        <Menu
-          visible={menuVisible}
-          onDismiss={() => setMenuVisible(false)}
-          anchor={<Appbar.Action icon="filter-variant" onPress={() => setMenuVisible(true)} />}
-        >
-          <Menu.Item
-            onPress={() => { setViewMode('active'); setMenuVisible(false); }}
-            title="Activas"
-            leadingIcon={viewMode === 'active' ? 'check' : undefined}
-          />
-          <Menu.Item
-            onPress={() => { setViewMode('deleted'); setMenuVisible(false); }}
-            title="Eliminadas"
-            leadingIcon={viewMode === 'deleted' ? 'check' : undefined}
-          />
-          <Menu.Item
-            onPress={() => { setViewMode('all'); setMenuVisible(false); }}
-            title="Todas"
-            leadingIcon={viewMode === 'all' ? 'check' : undefined}
-          />
-        </Menu>
-
-        {/* crear solo cuando no estás en eliminadas */}
-        {viewMode !== 'deleted' && (
-          <Appbar.Action icon="plus" onPress={openCreate} />
-        )}
+        <Appbar.Content title="Departamentos" />
+        <Appbar.Action icon="plus" onPress={openCreateDept} />
       </Appbar.Header>
 
       <View style={styles.searchBox}>
         <TextInput
           mode="outlined"
-          placeholder="Buscar región (nombre o código)"
+          placeholder="Buscar departamento"
           value={q}
           onChangeText={setQ}
           right={<TextInput.Icon icon="magnify" />}
@@ -252,100 +231,147 @@ export default function RegionesIndex() {
       {loading && items.length === 0 ? (
         <View style={styles.center}>
           <ActivityIndicator />
-          <Text style={{ marginTop: 8 }}>Cargando regiones…</Text>
+          <Text style={{ marginTop: 8 }}>Cargando departamentos…</Text>
         </View>
       ) : (
         <FlatList
-          data={items}
+          data={filtered}
           keyExtractor={(x) => String(x.id)}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
           ItemSeparatorComponent={() => <View style={styles.sep} />}
-          ListEmptyComponent={<View style={styles.center}><Text>No hay regiones</Text></View>}
-          renderItem={({ item }) => {
-            const isDeleted = Boolean((item as any).eliminadoEn); // si incluyes eliminadoEn en Region
-            return (
-              <TouchableOpacity activeOpacity={0.85} onPress={() => (!isDeleted) && openEdit(item)}>
-                <View style={[styles.row, isDeleted && { opacity: 0.85 }]}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.rowTitle}>
-                      {item.nombre}{isDeleted ? ' (Eliminada)' : ''}
-                    </Text>
-                    <View style={styles.rowMeta}>
-                      <Text style={styles.metaText}>ID: {item.id}</Text>
-                      {item.codigo ? (
-                        <Chip icon={() => <Ionicons name="pricetag-outline" size={14} />}>
-                          {item.codigo}
-                        </Chip>
-                      ) : (
-                        <Chip>sin código</Chip>
-                      )}
-                      {isDeleted && (item as any).eliminadoEn && (
-                        <Text style={styles.metaText}>
-                          Eliminada: {new Date((item as any).eliminadoEn!).toLocaleString()}
-                        </Text>
-                      )}
-                    </View>
-                  </View>
-
-                  {isDeleted ? (
-                    <TouchableOpacity onPress={() => doRestore(item.id)} style={styles.iconBtn}>
-                      <Ionicons name="refresh-circle-outline" size={26} color="#2E7D32" />
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity onPress={() => askDelete(item)} style={styles.iconBtn}>
-                      <Ionicons name="trash-outline" size={20} color="#B00020" />
-                    </TouchableOpacity>
-                  )}
-                </View>
-              </TouchableOpacity>
-            );
-          }}
-          onEndReachedThreshold={0.4}
-          onEndReached={loadMore}
-          ListFooterComponent={
-            loadingMore ? (
-              <View style={{ paddingVertical: 12 }}>
-                <ActivityIndicator />
-              </View>
-            ) : null
+          ListEmptyComponent={
+            <View style={styles.center}>
+              <Text>No hay departamentos</Text>
+            </View>
           }
-          initialNumToRender={12}
-          maxToRenderPerBatch={12}
-          windowSize={7}
-          removeClippedSubviews
+          renderItem={({ item }) => (
+            <View style={styles.row}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.rowTitle}>{item.nombre}</Text>
+                {!!item?.creadoEn && (
+                  <Text>
+                    Creado: {new Date(item.creadoEn).toLocaleString()}
+                  </Text>
+                )}
+              </View>
+
+              <View style={styles.rowActions}>
+                <IconButton
+                  icon="city-variant-outline"
+                  onPress={() => openMunis(item)}
+                  accessibilityLabel="Gestionar municipios"
+                />
+                <IconButton
+                  icon="pencil-outline"
+                  onPress={() => openEditDept(item)}
+                  accessibilityLabel="Editar departamento"
+                />
+                <IconButton
+                  icon="trash-can-outline"
+                  iconColor="#B00020"
+                  onPress={() => askDeleteDept(item)}
+                  accessibilityLabel="Eliminar departamento"
+                />
+              </View>
+            </View>
+          )}
           contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 24 }}
         />
       )}
 
-      {/* modal crear/editar */}
+      {/* ===== Modal crear/editar departamento ===== */}
       <Portal>
-        <Modal visible={modalVisible} onDismiss={() => setModalVisible(false)} contentContainerStyle={styles.modalCard}>
-          <Text style={styles.modalTitle}>{editing ? 'Editar región' : 'Nueva región'}</Text>
+        <Modal
+          visible={deptModalVisible}
+          onDismiss={() => setDeptModalVisible(false)}
+          contentContainerStyle={styles.modalCard}
+        >
+          <Text style={styles.modalTitle}>{editingDept ? 'Editar departamento' : 'Nuevo departamento'}</Text>
 
           <TextInput
             label="Nombre"
             mode="outlined"
-            value={formNombre}
-            onChangeText={setFormNombre}
+            value={formDeptNombre}
+            onChangeText={setFormDeptNombre}
             style={styles.input}
           />
-          <HelperText type="info" visible>Ejemplos: Huehuetenango, Todos Santos…</HelperText>
-
-          <TextInput
-            label="Código (opcional)"
-            mode="outlined"
-            placeholder="HUE-01"
-            value={formCodigo}
-            onChangeText={setFormCodigo}
-            style={styles.input}
-            right={<TextInput.Icon icon="pricetag" />}
-          />
+          <HelperText type="info" visible>
+            Ejemplo: Huehuetenango, Alta Verapaz…
+          </HelperText>
 
           <View style={styles.actions}>
-            <Button onPress={() => setModalVisible(false)} disabled={loading}>Cancelar</Button>
-            <Button mode="contained" onPress={saveFromModal} loading={loading} disabled={loading}>
-              {editing ? 'Actualizar' : 'Crear'}
+            <Button onPress={() => setDeptModalVisible(false)}>Cancelar</Button>
+            <Button mode="contained" onPress={saveDept} loading={loading} disabled={loading}>
+              {editingDept ? 'Actualizar' : 'Crear'}
             </Button>
+          </View>
+        </Modal>
+      </Portal>
+
+      {/* ===== Modal gestión de municipios ===== */}
+      <Portal>
+        <Modal
+          visible={muniModalVisible}
+          onDismiss={() => setMuniModalVisible(false)}
+          contentContainerStyle={[styles.modalCard, { maxHeight: '85%' }]}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={styles.modalTitle}>
+              Municipios — {currentDepto?.nombre || ''}
+            </Text>
+            <IconButton icon="plus" onPress={startCreateMuni} />
+          </View>
+
+          {/* Editor rápido municipio */}
+          {(editingMuni || formMuniNombre) && (
+            <>
+              <TextInput
+                ref={muniInputRef}
+                label={editingMuni ? 'Editar municipio' : 'Nuevo municipio'}
+                mode="outlined"
+                value={formMuniNombre}
+                onChangeText={setFormMuniNombre}
+                style={styles.input}
+              />
+              <View style={[styles.actions, { marginTop: 0 }]}>
+                <Button
+                  onPress={() => { setEditingMuni(null); setFormMuniNombre(''); }}
+                  disabled={muniLoading}
+                >
+                  Cancelar
+                </Button>
+                <Button mode="contained" onPress={saveMuni} loading={muniLoading} disabled={muniLoading}>
+                  {editingMuni ? 'Actualizar' : 'Agregar'}
+                </Button>
+              </View>
+              <Divider style={{ marginVertical: 8 }} />
+            </>
+          )}
+
+          {muniLoading && munis.length === 0 ? (
+            <View style={styles.center}>
+              <ActivityIndicator />
+              <Text style={{ marginTop: 8 }}>Cargando municipios…</Text>
+            </View>
+          ) : (
+            <FlatList
+              data={munis}
+              keyExtractor={(x) => String(x.id)}
+              ItemSeparatorComponent={() => <View style={styles.sep} />}
+              ListEmptyComponent={<View style={styles.center}><Text>No hay municipios</Text></View>}
+              renderItem={({ item }) => (
+                <View style={styles.muniRow}>
+                  <Text style={{ flex: 1, fontSize: 15 }}>{item.nombre}</Text>
+                  <IconButton icon="pencil-outline" onPress={() => startEditMuni(item)} />
+                  <IconButton icon="trash-can-outline" iconColor="#B00020" onPress={() => askDeleteMuni(item)} />
+                </View>
+              )}
+              contentContainerStyle={{ paddingBottom: 8 }}
+            />
+          )}
+
+          <View style={styles.actions}>
+            <Button onPress={() => setMuniModalVisible(false)}>Cerrar</Button>
           </View>
         </Modal>
       </Portal>
@@ -358,13 +384,29 @@ const styles = StyleSheet.create({
   searchBox: { padding: 16, paddingBottom: 0 },
   center: { alignItems: 'center', justifyContent: 'center', paddingTop: 24 },
   sep: { height: 10 },
-  row: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FAFAFA', borderRadius: 12, padding: 12 },
+
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FAFAFA',
+    borderRadius: 12,
+    padding: 12,
+    gap: 8,
+  },
   rowTitle: { fontWeight: 'bold', fontSize: 16, marginBottom: 4 },
-  rowMeta: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  metaText: { color: '#666', marginRight: 6, fontSize: 12 },
-  iconBtn: { padding: 8, borderRadius: 8, backgroundColor: '#ECEFF1' },
+  rowActions: { flexDirection: 'row', alignItems: 'center' },
+
   modalCard: { marginHorizontal: 16, backgroundColor: 'white', padding: 16, borderRadius: 12 },
   modalTitle: { fontWeight: 'bold', fontSize: 18, marginBottom: 8, textAlign: 'left' },
   input: { marginBottom: 8, backgroundColor: '#fff' },
   actions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 12, marginTop: 8 },
+
+  muniRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F7F7F7',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
 });

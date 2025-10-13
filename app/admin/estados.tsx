@@ -13,44 +13,36 @@ import {
   TextInput,
   Text,
   ActivityIndicator,
-  Chip,
   Portal,
   Modal,
   Button,
   HelperText,
-  Menu,
 } from 'react-native-paper';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 
 import {
-  listEstados,
-  createEstado,
-  updateEstado,
-  deleteEstado,
-  restoreEstado,
-  Estado,
+  getEstadosIncendio,
+  createEstadoIncendio,
+  updateEstadoIncendio,
+  deleteEstadoIncendio,
+  EstadoIncendio,
 } from '../../services/catalogos';
 
-type ViewMode = 'active' | 'deleted' | 'all';
-
 export default function EstadosIndex() {
-  const [items, setItems] = useState<Estado[]>([]);
+  const [items, setItems] = useState<EstadoIncendio[]>([]);
   const [q, setQ] = useState('');
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
-  // vista
-  const [viewMode, setViewMode] = useState<ViewMode>('active');
-  const [menuVisible, setMenuVisible] = useState(false);
-
   // modal
   const [modalVisible, setModalVisible] = useState(false);
-  const [editing, setEditing] = useState<Estado | null>(null);
+  const [editing, setEditing] = useState<EstadoIncendio | null>(null);
+  const [formCodigo, setFormCodigo] = useState('');
   const [formNombre, setFormNombre] = useState('');
-  const [formColor, setFormColor] = useState(''); // opcional
+  const [formOrden, setFormOrden] = useState<string>(''); // lo guardamos como string y validamos a número
 
-  // debounce (para mantener consistencia con Roles/Regiones)
+  // debounce de carga
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const schedule = (fn: () => void, ms = 300) => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -60,19 +52,16 @@ export default function EstadosIndex() {
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const show =
-        viewMode === 'deleted' ? { show: 'deleted' as const }
-        : viewMode === 'all' ? { show: 'all' as const }
-        : undefined;
-
-      const data = await listEstados(show);
-      setItems(data || []);
+      const data = await getEstadosIncendio();
+      // El backend ya los trae ordenados por orden ASC, pero por si acaso:
+      const sorted = [...data].sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0));
+      setItems(sorted || []);
     } catch (e: any) {
       Alert.alert('Error', e?.response?.data?.message || e?.response?.data?.error || 'No se pudieron cargar estados');
     } finally {
       setLoading(false);
     }
-  }, [viewMode]);
+  }, []);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -86,54 +75,63 @@ export default function EstadosIndex() {
   useEffect(() => {
     schedule(load);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewMode]);
+  }, []);
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
     if (!s) return items;
-    return items.filter(x => (x.nombre || '').toLowerCase().includes(s));
+    return items.filter(x =>
+      (`${x.codigo || ''} ${x.nombre || ''}`).toLowerCase().includes(s)
+    );
   }, [items, q]);
 
   // ---- Modal helpers
   const openCreate = () => {
     setEditing(null);
+    setFormCodigo('');
     setFormNombre('');
-    setFormColor('');
+    setFormOrden('');
     setModalVisible(true);
   };
-  const openEdit = (e: Estado) => {
-    if ((e as any).eliminadoEn) return; // no editar si está eliminado
+
+  const openEdit = (e: EstadoIncendio) => {
     setEditing(e);
+    setFormCodigo(e.codigo || '');
     setFormNombre(e.nombre || '');
-    setFormColor((e as any).color || '');
+    setFormOrden(
+      typeof e.orden === 'number' && Number.isFinite(e.orden) ? String(e.orden) : ''
+    );
     setModalVisible(true);
   };
+
   const closeModal = () => setModalVisible(false);
 
-  const validarHex = (v: string) => {
-    if (!v) return true;
-    return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(v.trim());
+  const parseOrden = (v: string) => {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) return null;
+    return Math.floor(n);
   };
 
   const saveFromModal = async () => {
+    const codigo = formCodigo.trim();
     const nombre = formNombre.trim();
-    const color = formColor.trim();
+    const ordenNum = parseOrden(formOrden);
 
-    if (!nombre) {
-      Alert.alert('Validación', 'El nombre es requerido');
+    if (!codigo || !nombre) {
+      Alert.alert('Validación', 'Código y nombre son requeridos');
       return;
     }
-    if (color && !validarHex(color)) {
-      Alert.alert('Validación', 'El color debe ser HEX. Ej: #E53935 o #2E7D32');
+    if (ordenNum === null) {
+      Alert.alert('Validación', 'Orden debe ser un entero >= 0');
       return;
     }
 
     try {
       setLoading(true);
       if (editing) {
-        await updateEstado(editing.id, { nombre, color: color || undefined });
+        await updateEstadoIncendio(editing.id, { codigo, nombre, color: undefined, orden: ordenNum });
       } else {
-        await createEstado({ nombre, color: color || undefined });
+        await createEstadoIncendio({ codigo, nombre, color: undefined, orden: ordenNum });
       }
       closeModal();
       await load();
@@ -144,32 +142,20 @@ export default function EstadosIndex() {
     }
   };
 
-  const askDelete = (e: Estado) => {
-    if ((e as any).eliminadoEn) return; // ya eliminado
+  const askDelete = (e: EstadoIncendio) => {
     Alert.alert('Eliminar', `¿Eliminar el estado "${e.nombre}"?`, [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Eliminar', style: 'destructive', onPress: () => doDelete(e.id) },
     ]);
   };
+
   const doDelete = async (id: string) => {
     try {
       setLoading(true);
-      await deleteEstado(id);
+      await deleteEstadoIncendio(id);
       await load();
     } catch (e: any) {
       Alert.alert('Error', e?.response?.data?.message || e?.response?.data?.error || 'No se pudo eliminar');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const doRestore = async (id: string) => {
-    try {
-      setLoading(true);
-      await restoreEstado(id);
-      await load();
-    } catch (e: any) {
-      Alert.alert('Error', e?.response?.data?.message || e?.response?.data?.error || 'No se pudo restaurar');
     } finally {
       setLoading(false);
     }
@@ -179,44 +165,14 @@ export default function EstadosIndex() {
     <View style={styles.root}>
       <Appbar.Header mode="small">
         <Appbar.BackAction onPress={() => router.back()} />
-        <Appbar.Content title={
-          viewMode === 'deleted' ? 'Estados eliminados'
-          : viewMode === 'all' ? 'Estados (Todos)'
-          : 'Estados (Admin)'
-        } />
-        {/* Menú de vista */}
-        <Menu
-          visible={menuVisible}
-          onDismiss={() => setMenuVisible(false)}
-          anchor={<Appbar.Action icon="filter-variant" onPress={() => setMenuVisible(true)} />}
-        >
-          <Menu.Item
-            onPress={() => { setViewMode('active'); setMenuVisible(false); }}
-            title="Activos"
-            leadingIcon={viewMode === 'active' ? 'check' : undefined}
-          />
-          <Menu.Item
-            onPress={() => { setViewMode('deleted'); setMenuVisible(false); }}
-            title="Eliminados"
-            leadingIcon={viewMode === 'deleted' ? 'check' : undefined}
-          />
-          <Menu.Item
-            onPress={() => { setViewMode('all'); setMenuVisible(false); }}
-            title="Todos"
-            leadingIcon={viewMode === 'all' ? 'check' : undefined}
-          />
-        </Menu>
-
-        {/* Crear solo si no estás viendo eliminados */}
-        {viewMode !== 'deleted' && (
-          <Appbar.Action icon="plus" onPress={openCreate} />
-        )}
+        <Appbar.Content title="Estados (Admin)" />
+        <Appbar.Action icon="plus" onPress={openCreate} />
       </Appbar.Header>
 
       <View style={styles.searchBox}>
         <TextInput
           mode="outlined"
-          placeholder="Buscar estado"
+          placeholder="Buscar por código o nombre"
           value={q}
           onChangeText={setQ}
           right={<TextInput.Icon icon="magnify" />}
@@ -235,46 +191,21 @@ export default function EstadosIndex() {
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
           ItemSeparatorComponent={() => <View style={styles.sep} />}
           ListEmptyComponent={<View style={styles.center}><Text>No hay estados</Text></View>}
-          renderItem={({ item }) => {
-            const isDeleted = Boolean((item as any).eliminadoEn);
-            const color = (item as any).color as string | undefined;
-            return (
-              <TouchableOpacity activeOpacity={0.85} onPress={() => (!isDeleted) && openEdit(item)}>
-                <View style={[styles.row, isDeleted && { opacity: 0.85 }]}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.rowTitle}>
-                      {item.nombre}{isDeleted ? ' (Eliminado)' : ''}
-                    </Text>
-                    <View style={styles.rowMeta}>
-                      <Text style={styles.metaText}>ID: {item.id}</Text>
-                      {color ? (
-                        <Chip icon={() => <Ionicons name="color-palette" size={14} />}>
-                          {color}
-                        </Chip>
-                      ) : (
-                        <Chip>sin color</Chip>
-                      )}
-                      {isDeleted && (item as any).eliminadoEn && (
-                        <Text style={styles.metaText}>
-                          Eliminado: {new Date((item as any).eliminadoEn!).toLocaleString()}
-                        </Text>
-                      )}
-                    </View>
-                  </View>
-
-                  {isDeleted ? (
-                    <TouchableOpacity style={styles.iconBtn} onPress={() => doRestore(item.id)}>
-                      <Ionicons name="refresh-circle-outline" size={26} color="#2E7D32" />
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity style={styles.iconBtn} onPress={() => askDelete(item)}>
-                      <Ionicons name="trash-outline" size={20} color="#B00020" />
-                    </TouchableOpacity>
-                  )}
+          renderItem={({ item }) => (
+            <TouchableOpacity activeOpacity={0.85} onPress={() => openEdit(item)}>
+              <View style={styles.row}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rowTitle}>{item.nombre}</Text>
+                  <Text style={styles.metaText}>
+                    Código: <Text style={{ fontWeight: 'bold' }}>{item.codigo}</Text> · Orden: {item.orden ?? 0}
+                  </Text>
                 </View>
-              </TouchableOpacity>
-            );
-          }}
+                <TouchableOpacity style={styles.iconBtn} onPress={() => askDelete(item)}>
+                  <Ionicons name="trash-outline" size={20} color="#B00020" />
+                </TouchableOpacity>
+              </View>
+            </TouchableOpacity>
+          )}
           contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 24 }}
         />
       )}
@@ -285,29 +216,31 @@ export default function EstadosIndex() {
           <Text style={styles.modalTitle}>{editing ? 'Editar estado' : 'Nuevo estado'}</Text>
 
           <TextInput
+            label="Código"
+            mode="outlined"
+            value={formCodigo}
+            onChangeText={setFormCodigo}
+            style={styles.input}
+          />
+          <HelperText type="info" visible>Ejemplos: ACT, REP, OFF… (único)</HelperText>
+
+          <TextInput
             label="Nombre"
             mode="outlined"
             value={formNombre}
             onChangeText={setFormNombre}
             style={styles.input}
           />
-          <HelperText type="info" visible>Ejemplos: Activo, Reportado, Apagado</HelperText>
+          <HelperText type="info" visible>Ejemplos: Activo, Reportado, Apagado…</HelperText>
 
           <TextInput
-            label="Color (HEX opcional)"
+            label="Orden (entero ≥ 0)"
             mode="outlined"
-            placeholder="#E53935"
-            value={formColor}
-            onChangeText={setFormColor}
-            right={<TextInput.Icon icon="palette" />}
+            value={formOrden}
+            onChangeText={setFormOrden}
+            keyboardType="number-pad"
             style={styles.input}
-            error={!!formColor && !validarHex(formColor)}
           />
-          <HelperText type={formColor && !validarHex(formColor) ? 'error' : 'info'} visible>
-            {formColor && !validarHex(formColor)
-              ? 'Formato HEX inválido (#RGB, #RRGGBB o #AARRGGBB).'
-              : 'Si lo dejas vacío, se puede asignar por defecto.'}
-          </HelperText>
 
           <View style={styles.actions}>
             <Button mode="text" onPress={closeModal} disabled={loading}>Cancelar</Button>
@@ -334,8 +267,7 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   rowTitle: { fontWeight: 'bold', fontSize: 16, marginBottom: 4 },
-  rowMeta: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  metaText: { color: '#666', marginRight: 6, fontSize: 12 },
+  metaText: { color: '#666', fontSize: 12 },
   iconBtn: { padding: 8, borderRadius: 8, backgroundColor: '#ECEFF1' },
   modalCard: { marginHorizontal: 16, backgroundColor: 'white', padding: 16, borderRadius: 12 },
   modalTitle: { fontWeight: 'bold', fontSize: 18, marginBottom: 8, textAlign: 'left' },
