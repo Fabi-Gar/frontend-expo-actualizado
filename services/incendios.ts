@@ -19,7 +19,7 @@ export type EstadoActual = {
 };
 
 export type RegionRef =
-  | { id: string; nombre: string; codigo?: string }
+  | { id: string | null; nombre: string; codigo?: string | null }
   | string
   | null;
 
@@ -31,38 +31,44 @@ export type Reporte = {
   fotos?: { id: string; url: string; orden?: number | null }[];
 };
 
-  export type Incendio = {
-    fotos: any;
-    id: string;
-    titulo: string;
-    descripcion?: string | null;
-    fechaInicio?: string | null;
-    fechaFin?: string | null;
-    visiblePublico?: boolean;
+export type UltimoReporteRef = {
+  reportadoPorNombre?: string | null;
+  reportadoEn?: string | null;
+  telefono?: string | null;
+} | null;
 
-    aprobado?: boolean;
-    aprobadoEn?: string | null;
-    rechazadoEn?: string | null;
-    requiereAprobacion?: boolean;
-    motivoRechazo?: string | null;
+export type Incendio = {
+  fotos: any;
+  id: string;
+  titulo: string;
+  descripcion?: string | null;
+  fechaInicio?: string | null;
+  fechaFin?: string | null;
+  visiblePublico?: boolean;
 
-    creadoEn?: string;
-    creadoPor?: UsuarioRef;
-    ubicacion?: { type: 'Point'; coordinates: [number, number] } | null;
-    region?: RegionRef;
-    validadoPor?: UsuarioRef;
-    etiquetas?: { id: string; nombre: string }[];
-    reportes?: Reporte[];
-    estadoActual?: EstadoActual | null;
+  aprobado?: boolean;
+  aprobadoEn?: string | null;
+  rechazadoEn?: string | null;
+  requiereAprobacion?: boolean;
+  motivoRechazo?: string | null;
 
-    lat?: number | null;
-    lng?: number | null;
-    lon?: number | null;
+  creadoEn?: string;
+  creadoPor?: UsuarioRef;
+  ubicacion?: { type: 'Point'; coordinates: [number, number] } | null;
+  region?: RegionRef;
+  validadoPor?: UsuarioRef;
+  etiquetas?: { id: string; nombre: string }[];
+  reportes?: Reporte[];
+  estadoActual?: EstadoActual | null;
+  ultimoReporte?: UltimoReporteRef;
 
-    portadaUrl?: string | null;
-    thumbnailUrl?: string | null;
-  };
+  lat?: number | null;
+  lng?: number | null;
+  lon?: number | null;
 
+  portadaUrl?: string | null;
+  thumbnailUrl?: string | null;
+};
 
 export type Paginated<T> = {
   total: number;
@@ -71,7 +77,7 @@ export type Paginated<T> = {
   items: T[];
 };
 
-/** ---------- Endpoint MAPA ---------- */
+/** ---------- Endpoint MAPA (legacy) ---------- */
 export type IncendioMapItem = {
   id: string;
   titulo: string;
@@ -202,12 +208,13 @@ function fromBackendIncendio(raw: any): Incendio {
   const visiblePublico = getBool(raw, ['visiblePublico', 'visible_publico'], true);
 
   // ubicación: prioriza centroide
+  const centroide =
+    raw?.centroide && raw.centroide.type === 'Point' ? raw.centroide : undefined;
   const ubicacion =
-    (raw?.centroide && raw.centroide.type === 'Point')
-      ? raw.centroide
-      : (raw?.ubicacion && raw.ubicacion.type === 'Point'
-          ? raw.ubicacion
-          : undefined);
+    centroide ??
+    (raw?.ubicacion && raw.ubicacion.type === 'Point'
+      ? raw.ubicacion
+      : undefined);
 
   const portadaUrl = getStr(raw, ['portadaUrl', 'portada_url']) ?? null;
   const thumbnailUrl = getStr(raw, ['thumbnailUrl', 'thumbnail_url']) ?? null;
@@ -220,6 +227,37 @@ function fromBackendIncendio(raw: any): Incendio {
   const aprobado =
     raw?.aprobado === true ||
     (!!aprobadoEn && !rechazadoEn) || false;
+
+  // creado_por → creadoPor
+  const creador = raw?.creado_por
+    ? ({
+        id: raw.creado_por.usuario_uuid ?? raw.creado_por.id ?? null,
+        nombre: `${raw.creado_por.nombre ?? ''} ${raw.creado_por.apellido ?? ''}`.trim() || raw.creado_por.email || '',
+        correo: raw.creado_por.email ?? undefined,
+      } as UsuarioRef)
+    : raw?.creadoPor ?? null;
+
+  // region: del endpoint /with-ultimo-reporte (jsonb {region_uuid, nombre}) o fallback string
+  let region: RegionRef = raw?.region ?? null;
+  if (region && typeof region === 'object' && ('region_uuid' in region || 'id' in region || 'nombre' in region)) {
+    region = {
+      id: (region as any).region_uuid ?? (region as any).id ?? null,
+      nombre: (region as any).nombre ?? (typeof region === 'string' ? region : ''),
+      codigo: (region as any).codigo ?? null,
+    };
+  } else if (typeof region === 'string') {
+    region = { id: null, nombre: region };
+  }
+
+  // ultimo_reporte del endpoint /with-ultimo-reporte
+  const ultimoReporte: UltimoReporteRef =
+    raw?.ultimo_reporte
+      ? {
+          reportadoPorNombre: raw.ultimo_reporte.reportado_por_nombre ?? null,
+          reportadoEn: raw.ultimo_reporte.reportado_en ?? null,
+          telefono: raw.ultimo_reporte.telefono ?? null,
+        }
+      : null;
 
   const base: Incendio = {
     fotos: raw?.fotos ?? [],
@@ -237,13 +275,15 @@ function fromBackendIncendio(raw: any): Incendio {
     motivoRechazo,
 
     creadoEn: getDateLike(raw, ['creado_en', 'creadoEn']) ?? undefined,
-    creadoPor: raw?.creadoPor ?? null,
+    creadoPor: creador,
     ubicacion: ubicacion ?? null,
-    region: raw?.region ?? null,
+    region,
     validadoPor: raw?.validadoPor ?? null,
     etiquetas: raw?.etiquetas ?? [],
     reportes: raw?.reportes ?? [],
     estadoActual: normalizeEstadoActual(raw) ?? null,
+    ultimoReporte,
+
     portadaUrl,
     thumbnailUrl,
   };
@@ -367,61 +407,67 @@ export async function deleteIncendio(id: string) {
   return data;
 }
 
-/** ---------- Crear incendio (avanzado) ---------- */
-export type IncendioCreate = {
+/** ---------- Crear incendio + reporte (nuevo endpoint) ---------- */
+
+export type CreateWithReportePayload = {
   titulo: string;
-  descripcion?: string;
-  regionId?: string;
-  lat: number;
-  lng?: number;
-  lon?: number;
-  visiblePublico?: boolean;
-  etiquetasIds?: string[];
-  fechaInicio?: string;
-  validadoPorId?: string;
-  reporteInicial?: string;
-  reporteInicialFotos?: string[];
-  estadoInicialId?: string;
-  estadoInicialNombre?: string;
+  descripcion?: string | null;
+  centroide: { type: 'Point'; coordinates: [number, number] };
+  estado_incendio_uuid?: string; // opcional: el server pone default si no viene
+  reporte: {
+    medio_uuid: string;
+    ubicacion?: { type: 'Point'; coordinates: [number, number] }; // si no viene, usamos centroide
+    reportado_en?: string;                // default: now()
+    observaciones?: string | null;
+    telefono?: string | null;
+    departamento_uuid?: string | null;
+    municipio_uuid?: string | null;
+    lugar_poblado?: string | null;
+    finca?: string | null;
+    // institucion_uuid: la setea el backend desde el token/perfil
+  };
 };
 
-export async function createIncendioAvanzado(payload: IncendioCreate) {
-  const lon = payload.lon ?? payload.lng;
-
-  const body: any = {
-    titulo: payload.titulo,
-    descripcion: payload.descripcion ?? '',
-    visiblePublico: payload.visiblePublico ?? true,
-    fechaInicio: payload.fechaInicio ?? new Date().toISOString(),
-    ubicacion:
-      typeof lon === 'number' && typeof payload.lat === 'number'
-        ? { type: 'Point', coordinates: [lon, payload.lat] as [number, number] }
-        : undefined,
-    regionId: payload.regionId,
-    etiquetasIds: payload.etiquetasIds ?? [],
-    validadoPorId: payload.validadoPorId,
-    reporteInicial: payload.reporteInicial?.trim() || undefined,
-    estadoInicialId: payload.estadoInicialId,
-    estadoInicialNombre: payload.estadoInicialNombre,
+/**
+ * Intenta POST /incendios/with-reporte2 (body anidado)
+ * si no existe, intenta /incendios/with-reporte.
+ */
+export async function createIncendioWithReporte(payload: CreateWithReportePayload) {
+  const body = {
+    incendio: {
+      titulo: payload.titulo,
+      descripcion: payload.descripcion ?? null,
+      centroide: payload.centroide ?? null,
+      estado_incendio_uuid: payload.estado_incendio_uuid, // el server lo acepta opcional
+    },
+    reporte: {
+      medio_uuid: payload.reporte.medio_uuid,
+      // si no mandan ubicacion del reporte, usamos el centroide del incendio
+      ubicacion: payload.reporte.ubicacion ?? payload.centroide ?? null,
+      reportado_en: payload.reporte.reportado_en ?? new Date().toISOString(),
+      observaciones: payload.reporte.observaciones ?? null,
+      telefono: payload.reporte.telefono ?? null,
+      departamento_uuid: payload.reporte.departamento_uuid ?? null,
+      municipio_uuid: payload.reporte.municipio_uuid ?? null,
+      lugar_poblado: payload.reporte.lugar_poblado ?? null,
+      finca: payload.reporte.finca ?? null,
+      // NO enviar institucion_uuid: la resuelve el backend con el usuario del token
+    },
   };
 
-  if (Array.isArray(payload.reporteInicialFotos) && payload.reporteInicialFotos.length) {
-    body.reporteInicialFotos = payload.reporteInicialFotos.filter(Boolean);
+  try {
+    // ruta principal que implementaste
+    const { data } = await api.post('/incendios/with-reporte', body);
+    return fromBackendIncendio(data);
+  } catch (e: any) {
+    // fallback por si en algún entorno quedó versionado como /with-reporte2
+    if (e?.response?.status === 404) {
+      const { data } = await api.post('/incendios/with-reporte2', body);
+      return fromBackendIncendio(data);
+    }
+    throw e;
   }
-
-  const { data } = await api.post('/incendios', body);
-  return fromBackendIncendio(data);
 }
-
-/** ---------- Reportes ---------- */
-export async function addReporte(
-  incendioId: string,
-  payload: { descripcion: string; fecha?: string; usuarioId?: string }
-) {
-  const { data } = await api.post(`/incendios/${incendioId}/reportes`, payload);
-  return fromBackendIncendio(data);
-}
-
 /** ---------- Otros helpers ---------- */
 export async function hideIncendio(id: string) {
   const { data } = await api.patch(`/incendios/${id}`, {
@@ -443,3 +489,74 @@ export async function setEstadoIncendio(
   const { data } = await api.patch(`/incendios/${incendioId}`, opts);
   return fromBackendIncendio(data);
 }
+
+/** ---------- NUEVOS: feeds para mapa y admin ---------- */
+
+/**
+ * Incendios aprobados, con:
+ * - creado_por (nombre, apellido, email)
+ * - region (o fallback depto/muni del último reporte)
+ * - ultimo_reporte { reportado_por_nombre, reportado_en, telefono }
+ * GET /incendios/with-ultimo-reporte
+ */
+export async function listIncendiosWithUltimoReporte(params?: {
+  q?: string;
+  desde?: string; // ISO
+  hasta?: string; // ISO
+  page?: number;
+  pageSize?: number;
+}) {
+  const qs = new URLSearchParams();
+  if (params?.q) qs.set('q', params.q);
+  if (params?.desde) qs.set('desde', params.desde);
+  if (params?.hasta) qs.set('hasta', params.hasta);
+  if (params?.page) qs.set('page', String(params.page));
+  if (params?.pageSize) qs.set('pageSize', String(params.pageSize));
+  const url = `/incendios/with-ultimo-reporte${qs.toString() ? `?${qs}` : ''}`;
+
+  const { data } = await api.get<{ total: number; page: number; pageSize: number; items: any[] }>(url);
+  return {
+    total: data.total ?? (data.items?.length ?? 0),
+    page: data.page ?? params?.page ?? 1,
+    pageSize: data.pageSize ?? params?.pageSize ?? (data.items?.length ?? 0),
+    items: (data.items ?? []).map(fromBackendIncendio) as Incendio[],
+  } as Paginated<Incendio>;
+}
+
+/**
+ * Incendios NO aprobados (admin) con los mismos campos extra.
+ * GET /incendios/sin-aprobar
+ */
+export async function listIncendiosSinAprobar(params?: {
+  q?: string;
+  page?: number;
+  pageSize?: number;
+}) {
+  const qs = new URLSearchParams();
+  if (params?.q) qs.set('q', params.q);
+  if (params?.page) qs.set('page', String(params.page));
+  if (params?.pageSize) qs.set('pageSize', String(params.pageSize));
+  const url = `/incendios/sin-aprobar${qs.toString() ? `?${qs}` : ''}`;
+
+  const { data } = await api.get<{ total: number; page: number; pageSize: number; items: any[] }>(url);
+  return {
+    total: data.total ?? (data.items?.length ?? 0),
+    page: data.page ?? params?.page ?? 1,
+    pageSize: data.pageSize ?? params?.pageSize ?? (data.items?.length ?? 0),
+    items: (data.items ?? []).map(fromBackendIncendio) as Incendio[],
+  } as Paginated<Incendio>;
+
+}
+
+
+// --- aprobar / rechazar ---
+export async function aprobarIncendio(id: string) {
+  const { data } = await api.patch(`/incendios/${id}/aprobar`, {});
+  return fromBackendIncendio(data);
+}
+
+export async function rechazarIncendio(id: string, motivo: string) {
+  const { data } = await api.patch(`/incendios/${id}/rechazar`, { motivo_rechazo: motivo });
+  return fromBackendIncendio(data);
+}
+

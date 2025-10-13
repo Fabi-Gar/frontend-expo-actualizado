@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   View, StyleSheet, TouchableOpacity, TouchableWithoutFeedback,
@@ -261,86 +262,102 @@ useEffect(() => {
           undefined;
 
         return (
-        <Marker
-          key={item.id || (item as any).incendio_uuid}
-          coordinate={coord}
-          pinColor={getPinColor(item as any)}
-          tracksViewChanges={false}
-          accessibilityLabel={`Incendio ${item.titulo || (item as any).titulo || 'Sin título'}`}
+      <Marker
+        key={(item as any).id ?? (item as any).incendio_uuid}
+        coordinate={coord}
+        pinColor={getPinColor(item as any)}
+        tracksViewChanges={false}
+        accessibilityLabel={`Incendio ${(item as any).titulo || 'Sin título'}`}
+      >
+        <Callout
+          onPress={() =>
+            router.push(`/incendios/detalles?id=${(item as any).id ?? (item as any).incendio_uuid}`)
+          }
         >
-          <Callout onPress={() => router.push(`/incendios/detalles?id=${item.id || (item as any).incendio_uuid}`)}>
-            <View style={{ maxWidth: 240 }}>
-              {/* Título */}
-              <Text style={{ fontWeight: 'bold', fontSize: 15 }}>
-                {(item as any).titulo || 'Sin título'}
-              </Text>
+          <View style={{ maxWidth: 240 }}>
+            {/* Título */}
+            <Text style={{ fontWeight: 'bold', fontSize: 15 }}>
+              {(item as any).titulo || 'Sin título'}
+            </Text>
 
-              {/* Imagen (portada/thumbnail/foto[0]) */}
+            {/* Imagen */}
+            {(() => {
+              const cover =
+                (item as any).portadaUrl ||
+                (item as any).foto_portada_url ||
+                (item as any).thumbnailUrl ||
+                (item as any).fotos?.[0]?.url ||
+                null;
+
+              return (
+                <TouchableOpacity
+                  accessibilityRole="imagebutton"
+                  accessibilityLabel="Ver foto a pantalla completa"
+                  activeOpacity={0.85}
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    if (cover) debounceTap(() => setViewer({ visible: true, urls: [cover], index: 0 }));
+                  }}
+                >
+                  <Image
+                    source={
+                      cover
+                        ? { uri: cover }
+                        : require('@/assets/images/placeholder_incendio.png')
+                    }
+                    style={{ width: 240, height: 120, borderRadius: 8, marginTop: 6 }}
+                    resizeMode="cover"
+                  />
+                </TouchableOpacity>
+              );
+            })()}
+
+            {/* Descripción */}
+            <Text style={{ marginTop: 6 }} numberOfLines={4}>
+              {(item as any).descripcion || 'Sin descripción'}
+            </Text>
+
+            {/* Región (si hay) */}
+            <Text style={{ marginTop: 4, color: '#555', fontSize: 12 }}>
               {(() => {
-                const cover =
-                  (item as any).portadaUrl ||
-                  (item as any).foto_portada_url ||
-                  (item as any).thumbnailUrl ||
-                  (item as any).fotos?.[0]?.url ||
-                  null;
-
-                return (
-                  <TouchableOpacity
-                    accessibilityRole="imagebutton"
-                    accessibilityLabel="Ver foto a pantalla completa"
-                    activeOpacity={0.85}
-                    onPress={(e) => {
-                      e.stopPropagation();
-                      if (cover) debounceTap(() => setViewer({ visible: true, urls: [cover], index: 0 }));
-                    }}
-                  >
-                    <Image
-                      source={
-                        cover
-                          ? { uri: cover }
-                          : require('@/assets/images/placeholder_incendio.png')
-                      }
-                      style={{ width: 240, height: 120, borderRadius: 8, marginTop: 6 }}
-                      resizeMode="cover"
-                    />
-                  </TouchableOpacity>
-                );
+                const r = (item as any).region;
+                const nombreRegion =
+                  typeof r === 'object' && r ? (r.nombre || r.codigo || '') :
+                  typeof r === 'string' ? r : '';
+              return `Región: ${nombreRegion || 'Sin región'}`;
               })()}
+            </Text>
 
-              {/* Descripción */}
-              <Text style={{ marginTop: 6 }} numberOfLines={4}>
-                {(item as any).descripcion || 'Sin descripción'}
-              </Text>
+            {/* Publicado por */}
+            <Text style={{ marginTop: 2, color: '#666', fontSize: 12 }}>
+              {(() => {
+                const u = (item as any).creado_por || (item as any).creadoPor || null;
+                const name = [u?.nombre, u?.apellido].filter(Boolean).join(' ');
+                const by = name || u?.email || 'Anónimo';
+                return `Publicado por: ${by}`;
+              })()}
+            </Text>
 
-              {/* Publicado por */}
-              <Text style={{ marginTop: 6, color: '#666', fontSize: 12 }}>
-                {(() => {
-                  const u = (item as any).creado_por;
-                  const name = [u?.nombre, u?.apellido].filter(Boolean).join(' ');
-                  const by = name || u?.email || 'Anónimo';
-                  return `Publicado por: ${by}`;
-                })()}
-              </Text>
+            {/* Estado actual (si lo tienes calculado en el servicio) */}
+            <Text style={{ color: '#777', fontSize: 12, marginTop: 2 }}>
+              {((item as any).estadoActual?.estado?.nombre) || 'Reportado'}
+            </Text>
 
-              <Text style={{ color: '#777', fontSize: 12, marginTop: 2 }}>
-                {(item as any).estadoActual?.estado?.nombre || 'Reportado'}
-              </Text>
-
-              {/* Botón Ver */}
-              <View
-                style={{
-                  marginTop: 8,
-                  backgroundColor: '#4CAF50',
-                  paddingVertical: 6,
-                  borderRadius: 8,
-                  alignItems: 'center',
-                }}
-              >
-                <Text style={{ color: '#fff', fontWeight: 'bold' }}>Ver</Text>
-              </View>
+            {/* Botón Ver */}
+            <View
+              style={{
+                marginTop: 8,
+                backgroundColor: '#4CAF50',
+                paddingVertical: 6,
+                borderRadius: 8,
+                alignItems: 'center',
+              }}
+            >
+              <Text style={{ color: '#fff', fontWeight: 'bold' }}>Ver</Text>
             </View>
-          </Callout>
-        </Marker>
+          </View>
+        </Callout>
+      </Marker>
 
         );
       })}
@@ -581,6 +598,7 @@ useEffect(() => {
                   onPress={() => {
                     setSelectedEtiquetaIds(prev => {
                       const set = new Set(prev);
+                      // eslint-disable-next-line no-unused-expressions
                       checked ? set.delete(Number(item.id)) : set.add(Number(item.id));
                       return Array.from(set);
                     });

@@ -1,12 +1,14 @@
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { View, StyleSheet, FlatList, TouchableOpacity, RefreshControl } from 'react-native';
 import { Text, TextInput, Chip, Menu, Divider, Button } from 'react-native-paper';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 
-import { listIncendios, Incendio } from '@/services/incendios';
+import { listIncendios, Incendio, listIncendiosSinAprobar } from '@/services/incendios';
 import { getUser } from '@/session';
 import { isAdminUser } from '../utils/roles';
+import { getCierre } from '@/services/cierre';
+import { cierreBadgeStyle, cierreColor } from '@/app/utils/cierre';
 
 /* ------------------ helpers ------------------ */
 function timeAgo(iso?: string | null) {
@@ -24,51 +26,104 @@ function timeAgo(iso?: string | null) {
   return 'Hace segundos';
 }
 
-function flameColor(item: Incendio) {
-  // Si backend manda color, úsalo
-  const c = item?.estadoActual?.estado?.color;
-  if (typeof c === 'string' && c.trim()) return c;
-
-  const nombre = String(item?.estadoActual?.estado?.nombre || '').toUpperCase();
-  if (nombre.includes('ACTIVO')) return '#E53935';      // rojo
-  if (nombre.includes('REPOR') || nombre.includes('PEND')) return '#FB8C00'; // naranja
-  if (nombre.includes('APAG') || nombre.includes('CERR')) return '#2E7D32';  // verde
-  return '#616161'; // gris
-}
-
 /* ------------------ tipos filtro ------------------ */
 type AprobadoFilter = 'ALL' | 'APROBADOS' | 'NO_APROBADOS';
 
 export default function IncendiosList() {
   const [items, setItems] = useState<Incendio[]>([]);
   const [q, setQ] = useState('');
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [user, setUser] = useState<any>(null);
   const [refreshing, setRefreshing] = useState(false);
+
+  // estados de cierre por incendio_uuid/id
+  const [cierreEstados, setCierreEstados] = useState<Record<string, string>>({});
 
   // filtros UI
   const [aprobFilter, setAprobFilter] = useState<AprobadoFilter>('ALL');
   const [estadoFilter, setEstadoFilter] = useState<string>('TODOS');
   const [estadoMenuVisible, setEstadoMenuVisible] = useState(false);
 
+  // para inicializar el filtro por defecto (solo una vez) cuando sepamos si es admin
+  const initRef = useRef(false);
+
+  const fetchApproved = useCallback(async () => {
+    const arr = await listIncendios(1, 50); // aprobados
+    return arr || [];
+  }, []);
+
+  const fetchPending = useCallback(async () => {
+    const pag = await listIncendiosSinAprobar({ page: 1, pageSize: 50 });
+    return pag.items || [];
+  }, []);
+
+  // carga estados de cierre para el conjunto actual
+  const loadCierreEstados = useCallback(async (arr: Incendio[]) => {
+    const ids = Array.from(new Set(arr.map((it) => String((it as any).id ?? (it as any).incendio_uuid))));
+    if (!ids.length) return;
+
+    const acc: Record<string, string> = {};
+    await Promise.all(
+      ids.map(async (id) => {
+        try {
+          const c = await getCierre(id);
+          if (c && typeof c.estado_cierre === 'string') {
+            acc[id] = c.estado_cierre;
+          } else {
+            const sc = c?.secuencia_control || {};
+            const estado = sc?.extinguido_at
+              ? 'Extinguido'
+              : sc?.controlado_at
+              ? 'Controlado'
+              : (sc?.llegada_medios_terrestres_at || sc?.llegada_medios_aereos_at)
+              ? 'En atención'
+              : 'Pendiente';
+            acc[id] = estado;
+          }
+        } catch {
+          acc[id] = acc[id] || 'Pendiente';
+        }
+      })
+    );
+
+    setCierreEstados((prev) => ({ ...prev, ...acc }));
+  }, []);
+
   const load = useCallback(async () => {
     try {
       setRefreshing(true);
+
       const u = await getUser();
       setUser(u);
+      const admin = isAdminUser(u);
 
-      const arr = await listIncendios(1, 50); // retorna Incendio[]
-      const isAdmin = isAdminUser(u);
+      if (admin && !initRef.current) {
+        initRef.current = true;
+        setAprobFilter('NO_APROBADOS');
+      }
 
-      // no-admin: solo aprobados
-      const base = isAdmin ? arr : (arr || []).filter((x: any) => (x as any)?.aprobado === true);
+      let current: Incendio[] = [];
+      if (!admin) {
+        current = await fetchApproved();
+      } else if (aprobFilter === 'NO_APROBADOS') {
+        current = await fetchPending();
+      } else if (aprobFilter === 'APROBADOS') {
+        current = await fetchApproved();
+      } else {
+        const [approved, pending] = await Promise.all([fetchApproved(), fetchPending()]);
+        const map = new Map<string, Incendio>();
+        [...pending, ...approved].forEach((it) => map.set(String((it as any).id ?? (it as any).incendio_uuid), it));
+        current = Array.from(map.values());
+      }
 
-      setItems(base || []);
+      setItems(current);
+      loadCierreEstados(current);
     } catch {
       setItems([]);
     } finally {
       setRefreshing(false);
     }
-  }, []);
+  }, [aprobFilter, fetchApproved, fetchPending, loadCierreEstados]);
 
   useEffect(() => {
     load();
@@ -85,41 +140,30 @@ export default function IncendiosList() {
     return ['TODOS', ...arr];
   }, [items]);
 
-  // aplica búsqueda y filtros
+  // aplica búsqueda y filtros locales (se mantiene tu filtro por estadoActual)
   const data = useMemo(() => {
-    const isAdmin = isAdminUser(user);
     const s = q.trim().toLowerCase();
 
-    return (items || [])
-      .filter((it) => {
-        // filtro por aprobación (solo afecta a admin, porque no-admin ya viene filtrado en load)
-        if (isAdmin) {
-          const aprobado = (it as any)?.aprobado === true;
-          if (aprobFilter === 'APROBADOS' && !aprobado) return false;
-          if (aprobFilter === 'NO_APROBADOS' && aprobado) return false;
-        }
+    return (items || []).filter((it) => {
+      if (estadoFilter !== 'TODOS') {
+        const nombre = String(it?.estadoActual?.estado?.nombre || '').trim();
+        if (nombre !== estadoFilter) return false;
+      }
 
-        // filtro por estado
-        if (estadoFilter !== 'TODOS') {
-          const nombre = String(it?.estadoActual?.estado?.nombre || '').trim();
-          if (nombre !== estadoFilter) return false;
-        }
+      if (s) {
+        const regionNombre =
+          typeof it.region === 'object' && it.region
+            ? (it.region as any).nombre || ''
+            : typeof it.region === 'string'
+            ? it.region
+            : '';
+        const txt = `${it.titulo || ''} ${it.descripcion || ''} ${regionNombre}`.toLowerCase();
+        if (!txt.includes(s)) return false;
+      }
 
-        // búsqueda por texto: título + descripción + región
-        if (s) {
-          const regionNombre =
-            typeof it.region === 'object' && it.region
-              ? (it.region as any).nombre || ''
-              : typeof it.region === 'string'
-              ? it.region
-              : '';
-          const txt = `${it.titulo || ''} ${it.descripcion || ''} ${regionNombre}`.toLowerCase();
-          if (!txt.includes(s)) return false;
-        }
-
-        return true;
-      });
-  }, [items, q, aprobFilter, estadoFilter, user]);
+      return true;
+    });
+  }, [items, q, estadoFilter]);
 
   return (
     <View style={styles.container}>
@@ -218,13 +262,17 @@ export default function IncendiosList() {
       {/* Lista */}
       <FlatList
         data={data}
-        keyExtractor={(x) => String(x.id)}
+        keyExtractor={(x) => String((x as any).id ?? (x as any).incendio_uuid)}
         ItemSeparatorComponent={() => <View style={styles.sep} />}
         contentContainerStyle={{ paddingBottom: 24 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={load} />}
         renderItem={({ item }) => {
-          const updatedAt = item.creadoEn || item.fechaInicio || item.estadoActual?.fecha || null;
+          const itemId = String((item as any).id ?? (item as any).incendio_uuid);
+          const updatedAt = (item as any).creadoEn || (item as any).fechaInicio || item.estadoActual?.fecha || null;
           const aprobado = (item as any)?.aprobado === true;
+
+          const estadoCierre = cierreEstados[itemId];
+          const flame = cierreColor(estadoCierre);
 
           return (
             <TouchableOpacity
@@ -233,32 +281,29 @@ export default function IncendiosList() {
               onPress={() =>
                 router.push({
                   pathname: '/incendios/detalles',
-                  params: { id: String(item.id) },
+                  params: { id: itemId },
                 })
               }
             >
               <View style={styles.leftIcon}>
-                <Ionicons name="flame" size={28} color={flameColor(item)} />
+                <Ionicons name="flame" size={28} color={flame} />
               </View>
 
               <View style={styles.middle}>
-                {/* Título */}
                 <Text numberOfLines={1} style={styles.rowTitle}>
                   {item.titulo || 'Sin título'}
                 </Text>
 
-                {/* Descripción */}
                 <Text numberOfLines={2} style={styles.rowSub}>
                   {item.descripcion?.trim() || 'Sin descripción'}
                 </Text>
 
-                {/* Estado y aprobado (pequeño badge texto) */}
-                <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
-                  <Text style={styles.badgeMini}>
-                    {String(item?.estadoActual?.estado?.nombre || 'Sin estado')}
-                  </Text>
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
                   <Text style={[styles.badgeMini, aprobado ? styles.badgeOk : styles.badgeWarn]}>
                     {aprobado ? 'Aprobado' : 'No aprobado'}
+                  </Text>
+                  <Text style={[styles.badgeMini, cierreBadgeStyle(estadoCierre)]}>
+                    {estadoCierre ? `Estado: ${estadoCierre}` : 'Cierre: —'}
                   </Text>
                 </View>
               </View>
@@ -337,14 +382,14 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: 6,
   },
-  badgeOk: {
-    backgroundColor: '#E8F5E9',
-    color: '#2E7D32',
-  },
-  badgeWarn: {
-    backgroundColor: '#FFF3E0',
-    color: '#E65100',
-  },
+  badgeOk: { backgroundColor: '#E8F5E9', color: '#2E7D32' },
+  badgeWarn: { backgroundColor: '#FFF3E0', color: '#E65100' },
+
+  // estilos de fallback por si no usas cierreBadgeStyle (dejados por compatibilidad)
+  badgeCierreExt: { backgroundColor: '#E8F5E9', color: '#2E7D32' },
+  badgeCierreCtrl: { backgroundColor: '#E3F2FD', color: '#1565C0' },
+  badgeCierreAtn: { backgroundColor: '#FFF3E0', color: '#E65100' },
+  badgeCierrePend: { backgroundColor: '#F5F5F5', color: '#616161' },
 
   right: { width: 120, alignItems: 'flex-end' },
   rightTime: { color: '#666', fontSize: 12 },
