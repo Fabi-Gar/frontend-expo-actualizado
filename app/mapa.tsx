@@ -14,13 +14,12 @@ import MapView, {
 } from 'react-native-maps';
 import * as Clipboard from 'expo-clipboard';
 import NetInfo from '@react-native-community/netinfo';
-import { ActivityIndicator, Text, Chip, Checkbox, Button } from 'react-native-paper';
+import { ActivityIndicator, Text, Chip, Checkbox, Button, Snackbar } from 'react-native-paper';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router, useFocusEffect } from 'expo-router';
 
-// Componentes auxiliares
 import ImageViewerModal from '@/components/ImageViewerModal';
 import OfflineBanner from '@/components/OfflineBanner';
 import EmptyState from '@/components/EmptyState';
@@ -36,11 +35,9 @@ import { useMapRegion } from '../hooks/useMapRegion';
 import { getLatLngFromIncendio, probabilityFromConfidence, probabilityLabel } from '@/app/utils/map';
 import { isAdminUser } from './utils/roles';
 
-// 🔷 NUEVO: colores/estado desde cierre
 import { cierreColor, inferirEstadoCierre } from '@/app/utils/cierre';
 import { getCierre } from '@/services/cierre';
 
-/* ======= Constantes locales ======= */
 const AS_HEATMAP = 'heatmap';
 
 const DEFAULT_REGION: Region = {
@@ -50,7 +47,6 @@ const DEFAULT_REGION: Region = {
   longitudeDelta: 2.2,
 };
 
-// BBOX Guatemala: [-92.27, 13.74, -88.18, 17.82]
 const GT_BBOX = [
   { latitude: 13.74, longitude: -92.27 },
   { latitude: 17.82, longitude: -88.18 },
@@ -61,7 +57,6 @@ type Etiqueta = { id: string | number; nombre: string };
 export default function Mapa() {
   const insets = useSafeAreaInsets();
 
-  // ----- Estado UI -----
   const [mapType, setMapType] = useState<MapType>('standard');
   const [viewer, setViewer] = useState<{ visible: boolean; urls: string[]; index: number } | null>(null);
   const [offline, setOffline] = useState(false);
@@ -74,22 +69,18 @@ export default function Mapa() {
   const [leyendaOpen, setLeyendaOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
-  // ----- Control del mapa -----
   const {
     mapRef, mapReadyRef, currentRegion, span,
     onRegionChangeComplete, setMapReady, centerOnUser, fitToCoordinates
   } = useMapRegion(DEFAULT_REGION);
 
-  // ----- Usuario / permisos -----
   const [currentUser, setCurrentUser] = useState<any>(null);
   const isAdmin = isAdminUser(currentUser);
 
-  // ----- Catálogo de etiquetas + filtros -----
   const [allEtiquetas, setAllEtiquetas] = useState<Etiqueta[]>([]);
   const [selectedEtiquetaIds, setSelectedEtiquetaIds] = useState<number[]>([]);
   const [filtersOpen, setFiltersOpen] = useState(false);
 
-  // ===== Incendios (hook) =====
   const {
     items,
     heatData,
@@ -101,7 +92,6 @@ export default function Mapa() {
     pageSize: 2000,
   });
 
-  // ===== FIRMS (hook) =====
   const {
     enabled: firmsEnabled,
     setEnabled: setFirmsEnabled,
@@ -112,7 +102,6 @@ export default function Mapa() {
     geo: firmsGeo,
   } = useFirmsGT();
 
-  // ===== Persistencia Heatmap (toggle) =====
   useEffect(() => {
     (async () => {
       try {
@@ -126,12 +115,10 @@ export default function Mapa() {
     AsyncStorage.setItem(AS_HEATMAP, heatmapEnabled ? '1' : '0').catch(() => {});
   }, [heatmapEnabled]);
 
-  // ===== Usuario actual =====
   useEffect(() => {
     (async () => { try { setCurrentUser(await getUser()); } catch {} })();
   }, []);
 
-  // ===== Conectividad =====
   useEffect(() => {
     const sub = NetInfo.addEventListener((state) => {
       const noInternet = !(state.isConnected && state.isInternetReachable);
@@ -140,11 +127,146 @@ export default function Mapa() {
     return () => sub && sub();
   }, []);
 
-  // ===== Cargar/recargar incendios =====
-  useEffect(() => { reload(); }, [reload]);
-  useFocusEffect(useCallback(() => { reload(); }, [reload]));
+  // ======= Snackbar de error amigable + log técnico =======
+  const [errorMsg, setErrorMsg] = useState<string>('');
 
-  // ===== Depuración: coordenadas inválidas =====
+  // ======= 🔁 Throttle + retry =======
+  const lastReloadRef = useRef<number>(0);
+  const reloadingRef = useRef<boolean>(false);
+  const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ---------- Backoff + Retry-After helpers ----------
+  let retryAttemptRef = useRef<number>(0);
+  const BASE_DELAY_MS = 3000;
+  const MAX_DELAY_MS = 30000;
+  const JITTER_MS = 400;
+
+  const randJitter = () => {
+    const sign = Math.random() < 0.5 ? -1 : 1;
+    return Math.floor(Math.random() * JITTER_MS) * sign;
+  };
+
+  const parseRetryAfterMs = (retryAfter?: string | number | null): number | null => {
+    if (retryAfter == null) return null;
+    if (typeof retryAfter === 'number') {
+      return Number.isFinite(retryAfter) ? Math.max(0, retryAfter * 1000) : null;
+    }
+    const s = String(retryAfter).trim();
+    const sec = Number(s);
+    if (Number.isFinite(sec)) return Math.max(0, sec * 1000);
+    const then = Date.parse(s);
+    if (Number.isFinite(then)) {
+      const ms = then - Date.now();
+      return ms > 0 ? ms : null;
+    }
+    return null;
+  };
+
+  const resetRetryBackoff = () => {
+    retryAttemptRef.current = 0;
+  };
+
+  // 1) safeReload ANTES que scheduleRetry
+  const safeReload = useCallback(async () => {
+    const now = Date.now();
+    if (now - lastReloadRef.current < 2000 || reloadingRef.current) return;
+    reloadingRef.current = true;
+    try {
+      await reload();
+      lastReloadRef.current = Date.now();
+      resetRetryBackoff(); // éxito → reinicia backoff
+    } catch (e: any) {
+      console.error('[MAP][safeReload]', e?.response?.status ?? e);
+      setErrorMsg('No se pudieron cargar los incendios. Intenta de nuevo.');
+    } finally {
+      reloadingRef.current = false;
+    }
+  }, [reload]);
+
+  const scheduleRetry = useCallback((ms?: number, doRetry?: () => void) => {
+    if (retryTimeoutRef.current) return;
+    const attempt = retryAttemptRef.current;
+    const base = ms ?? Math.min(MAX_DELAY_MS, BASE_DELAY_MS * Math.pow(2, attempt));
+    const wait = Math.max(1000, Math.min(MAX_DELAY_MS, base + randJitter()));
+    retryAttemptRef.current = Math.min(attempt + 1, 6);
+
+    retryTimeoutRef.current = setTimeout(async () => {
+      retryTimeoutRef.current = null;
+      try {
+        if (typeof doRetry === 'function') await doRetry();
+        else await safeReload();
+      } catch (e) {
+        // no-op
+      }
+    }, wait);
+  }, [safeReload]);
+
+  useEffect(() => {
+    return () => { if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current); };
+  }, []);
+
+  // 2) reportError con 429, 5xx y conectividad
+  const reportError = useCallback((err: unknown, fallback = 'Ocurrió un error inesperado.') => {
+    const anyErr: any = err || {};
+    const status: number | undefined =
+      anyErr?.response?.status ??
+      anyErr?.status ??
+      (typeof anyErr?.code === 'number' ? anyErr.code : undefined);
+
+    const retryAfterHeader =
+      anyErr?.response?.headers?.['retry-after'] ??
+      anyErr?.response?.headers?.['Retry-After'] ??
+      anyErr?.headers?.['retry-after'] ??
+      null;
+
+    // Log compacto para Metro
+    const short = {
+      status: status ?? null,
+      url: anyErr?.config?.url ?? anyErr?.request?.url ?? null,
+      method: anyErr?.config?.method ?? null,
+      code: anyErr?.code ?? null,
+      retryAfter: retryAfterHeader ?? null,
+    };
+    console.debug('[MAP][ERROR]', short);
+    if (status !== 429) {
+      console.debug('[MAP][ERROR][raw]', anyErr?.response?.data || anyErr?.message || anyErr);
+    }
+
+    let msg =
+      anyErr?.response?.data?.message ||
+      anyErr?.response?.data?.error ||
+      anyErr?.response?.data?.detail ||
+      anyErr?.message ||
+      fallback;
+
+    if (status === 429) {
+      const retryAfterMs = parseRetryAfterMs(retryAfterHeader);
+      const seconds = retryAfterMs ? Math.ceil(retryAfterMs / 1000) : undefined;
+      console.warn('[MAP][RATE_LIMIT]', { retryAfter: retryAfterHeader, retryAfterMs, attempt: retryAttemptRef.current, url: short.url });
+      msg = seconds
+        ? `Demasiadas solicitudes. Inténtalo de nuevo en ${seconds} s.`
+        : 'Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.';
+      scheduleRetry(retryAfterMs ?? undefined, () => safeReload());
+    } else if (status === 503) {
+      msg = 'Servicio temporalmente no disponible. Inténtalo más tarde.';
+    } else if (status === 502) {
+      msg = 'Hubo un problema con el servidor. Reintenta en breve.';
+    } else if (anyErr?.request && !anyErr?.response) {
+      msg = 'Sin respuesta del servidor. Verifica tu conexión.';
+    } else if (status === 401 || status === 403) {
+      msg = 'No autorizado. Inicia sesión o verifica tus permisos.';
+    } else if (status && status >= 500) {
+      msg = 'Error del servidor. Inténtalo en unos minutos.';
+    }
+
+    setErrorMsg(String(msg));
+    return msg;
+  }, [scheduleRetry, safeReload]);
+
+  // ===== Cargar/recargar incendios =====
+  useEffect(() => { safeReload(); }, [safeReload]);
+  useFocusEffect(useCallback(() => { safeReload(); }, [safeReload]));
+
   useEffect(() => {
     if (!items?.length) return;
     let invalid = 0;
@@ -157,7 +279,6 @@ export default function Mapa() {
     }
   }, [items]);
 
-  // ===== NUEVO: estado de cierre y reportante por incendio =====
   const [cierreEstados, setCierreEstados] = useState<Record<string, string>>({});
   const [reportantes, setReportantes] = useState<Record<string, string>>({});
 
@@ -171,12 +292,10 @@ export default function Mapa() {
     await Promise.all(
       ids.map(async (id) => {
         try {
-          // Cierre / estado
           const c = await getCierre(id);
           const estado = c?.estado_cierre || inferirEstadoCierre(c?.secuencia_control || undefined);
           estAcc[id] = estado;
 
-          // Reportante (tomamos el primer disponible; API sin orden → nos sirve igual para mostrar)
           try {
             const { data: rep } = await api.get(`/reportes?incendio_uuid=${id}&pageSize=1`);
             const first = (rep?.items || [])[0] || null;
@@ -186,19 +305,18 @@ export default function Mapa() {
               '';
             if (name) repAcc[id] = name;
           } catch {
-            // fallback al creador si no hay reporte
             const it = arr.find((x) => String(x?.id ?? x?.incendio_uuid) === id);
             const u = it?.creado_por || it?.creadoPor || null;
             const by = [u?.nombre, u?.apellido].filter(Boolean).join(' ') || u?.email || '';
             if (by) repAcc[id] = by;
           }
-        } catch {
-          // si falla cierre, lo marcamos Pendiente y tratamos de sacar reportante del item
+        } catch (e: any) {
           estAcc[id] = estAcc[id] || 'Pendiente';
           const it = arr.find((x) => String(x?.id ?? x?.incendio_uuid) === id);
           const u = it?.creado_por || it?.creadoPor || null;
           const by = [u?.nombre, u?.apellido].filter(Boolean).join(' ') || u?.email || '';
           if (by) repAcc[id] = by;
+          console.warn('[MAP][getCierre] fallo para id', id, e?.response?.status ?? e);
         }
       })
     );
@@ -207,13 +325,11 @@ export default function Mapa() {
     setReportantes((prev) => ({ ...prev, ...repAcc }));
   }, []);
 
-  // cargar estados/reportantes cada vez que cambian items
   useEffect(() => {
     if (!items?.length) return;
     loadCierreYReportante(items as any[]);
   }, [items, loadCierreYReportante]);
 
-  // Autofit una sola vez cuando haya datos
   const firstAutoFitDoneRef = useRef(false);
   useEffect(() => {
     if (!mapRef.current || !items.length || firstAutoFitDoneRef.current) return;
@@ -224,7 +340,6 @@ export default function Mapa() {
     }
   }, [items, mapRef, fitToCoordinates, insets.top, insets.bottom]);
 
-  // ===== Helpers UI =====
   const openDrawer = () => {
     setDrawerOpen(true);
     Animated.timing(drawerAnim, { toValue: 0, duration: 300, easing: Easing.out(Easing.ease), useNativeDriver: false }).start();
@@ -284,7 +399,6 @@ export default function Mapa() {
     await Clipboard.setStringAsync(`${lat.toFixed(6)}, ${lng.toFixed(6)}`);
   };
 
-  // Mostrar puntos FIRMS (markers) sólo con zoom alto
   const showFirmDots = span.latDelta < 0.05 && span.lngDelta < 0.05;
 
   const renderMarkers = () => (
@@ -295,8 +409,8 @@ export default function Mapa() {
         const { latitude: lat, longitude: lng } = coord;
 
         const id = String((item as any).id ?? (item as any).incendio_uuid);
-        const estado = cierreEstados[id]; // ← estado de cierre cargado
-        const pinColor = cierreColor(estado); // ← color por estado de cierre
+        const estado = cierreEstados[id];
+        const pinColor = cierreColor(estado);
         const publicadoPor = reportantes[id] ||
           (() => {
             const u = (item as any).creado_por || (item as any).creadoPor || null;
@@ -324,12 +438,10 @@ export default function Mapa() {
               }
             >
               <View style={{ maxWidth: 240 }}>
-                {/* Título */}
                 <Text style={{ fontWeight: 'bold', fontSize: 15 }}>
                   {(item as any).titulo || 'Sin título'}
                 </Text>
 
-                {/* Imagen */}
                 <TouchableOpacity
                   accessibilityRole="imagebutton"
                   accessibilityLabel="Ver foto a pantalla completa"
@@ -346,22 +458,18 @@ export default function Mapa() {
                   />
                 </TouchableOpacity>
 
-                {/* Descripción */}
                 <Text style={{ marginTop: 6 }} numberOfLines={4}>
                   {(item as any).descripcion || 'Sin descripción'}
                 </Text>
 
-                {/* Publicado por */}
                 <Text style={{ marginTop: 4, color: '#666', fontSize: 12 }}>
                   {`Publicado por: ${publicadoPor || 'Anónimo'}`}
                 </Text>
 
-                {/* Estado de cierre */}
                 <Text style={{ color: '#777', fontSize: 12, marginTop: 2 }}>
                   {`Estado: ${estado || 'Pendiente'}`}
                 </Text>
 
-                {/* Botón Ver */}
                 <View
                   style={{
                     marginTop: 8,
@@ -380,7 +488,6 @@ export default function Mapa() {
       })}
     </>
   );
-
   return (
     <View style={styles.container}>
       <View style={{ position: 'absolute', top: (insets.top || 0) + 8, left: 8, backgroundColor: '#0008', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 8, zIndex: 4 }}>
@@ -394,11 +501,17 @@ export default function Mapa() {
         showsUserLocation
         showsMyLocationButton={false}
         onRegionChangeComplete={onRegionChangeComplete}
-        onMapReady={async () => { setMapReady(); await centerOnUser(); }}
+        onMapReady={async () => {
+          try {
+            setMapReady();
+            await centerOnUser();
+          } catch (e) {
+            reportError(e, 'No se pudo centrar el mapa en tu ubicación');
+          }
+        }}
         mapType={mapType}
         mapPadding={{ top: insets.top + 48, right: 0, bottom: insets.bottom, left: 0 }}
       >
-        {/* Heatmap de incendios propios */}
         {heatmapEnabled && heatData.length > 0 && (
           <Heatmap
             points={heatData}
@@ -412,7 +525,6 @@ export default function Mapa() {
           />
         )}
 
-        {/* Capa FIRMS (heatmap) */}
         {firmsEnabled && firmsHeat.length > 0 && (
           <Heatmap
             points={firmsHeat}
@@ -426,7 +538,6 @@ export default function Mapa() {
           />
         )}
 
-        {/* Puntos FIRMS como markers */}
         {firmsEnabled && span.latDelta < 0.05 && span.lngDelta < 0.05 && (firmsGeo?.items?.features ?? []).map((f: any) => {
           const [lon, lat] = f.geometry.coordinates as [number, number];
           const conf = Number(f.properties?.confidence ?? 0);
@@ -435,7 +546,7 @@ export default function Mapa() {
           const when = f.properties?.acqTime || '';
           const id = f.id || `${lat},${lon},${when}`;
 
-          return (
+        return (
             <Marker
               key={id}
               coordinate={{ latitude: lat, longitude: lon }}
@@ -469,7 +580,6 @@ export default function Mapa() {
           );
         })}
 
-        {/* Marcadores de incendios */}
         {renderMarkers()}
       </MapView>
 
@@ -482,7 +592,7 @@ export default function Mapa() {
         </View>
       )}
 
-      <OfflineBanner visible={offline} onRetry={reload} />
+      <OfflineBanner visible={offline} onRetry={() => safeReload()} />
 
       {(drawerOpen || leyendaOpen || menuOpen) && (
         <TouchableWithoutFeedback
@@ -501,7 +611,6 @@ export default function Mapa() {
         isAdmin={isAdmin}
       />
 
-      {/* Header */}
       <View style={[styles.header, { paddingTop: insets.top + 12, paddingBottom: 15 }]}>
         <TouchableOpacity onPress={openMenu} accessibilityRole="button" accessibilityLabel="Abrir menú">
           <Ionicons name="menu" size={24} color="#fff" />
@@ -529,12 +638,11 @@ export default function Mapa() {
         </TouchableOpacity>
       </View>
 
-      {/* Botonera derecha */}
       <View style={[styles.rightButtons, { top: (insets.top || 0) + 120 }]}>
         <CustomButton icon="layers" label="Capa" onPress={openDrawer} />
         <CustomButton icon="location" label="Cerca" onPress={centerOnUser} />
         <CustomButton icon="book" label="Leyenda" onPress={openLeyenda} />
-        <CustomButton icon="refresh" label={loading ? '...' : 'Recargar'} onPress={reload} />
+        <CustomButton icon="refresh" label={loading ? '...' : 'Recargar'} onPress={() => safeReload()} />
         <CustomButton
           icon="map"
           label="GT"
@@ -542,7 +650,6 @@ export default function Mapa() {
         />
       </View>
 
-      {/* Chips / Filtros */}
       <View pointerEvents="box-none" style={[styles.topChipsWrap, { top: (insets.top || 0) + 70 }]}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.topChipsBar}>
           <Chip
@@ -589,7 +696,6 @@ export default function Mapa() {
         </ScrollView>
       </View>
 
-      {/* Modal filtros etiquetas */}
       <Modal visible={filtersOpen} transparent animationType="fade" onRequestClose={() => setFiltersOpen(false)}>
         <TouchableWithoutFeedback onPress={() => setFiltersOpen(false)}>
           <View style={styles.modalOverlay} />
@@ -636,7 +742,6 @@ export default function Mapa() {
         </View>
       </Modal>
 
-      {/* Empty state */}
       {!loading && items.length === 0 && (
         <View style={[styles.emptyOverlay, { top: (insets.top || 0) + 120 }]}>
           <EmptyState
@@ -655,6 +760,15 @@ export default function Mapa() {
           />
         </View>
       )}
+
+      <Snackbar
+        visible={!!errorMsg}
+        onDismiss={() => setErrorMsg('')}
+        duration={3500}
+        action={{ label: 'OK', onPress: () => setErrorMsg('') }}
+      >
+        {errorMsg}
+      </Snackbar>
 
       <ImageViewerModal
         visible={!!viewer}

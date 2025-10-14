@@ -31,6 +31,7 @@ export type Municipio = {
   creadoEn?: string;
   actualizadoEn?: string;
 }
+
 /* Catálogos de cierre / soporte */
 export type TipoIncendio = Opcion
 export type TipoPropiedad = Opcion
@@ -67,16 +68,44 @@ export type CatalogName =
   | 'tecnicas_extincion_catalogo'
   | 'roles';
 
-/** Devuelve solo el arreglo de items del catálogo indicado (paginado simple). */
-export async function listCatalog(
-  name: CatalogName,
-  page = 1,
-  pageSize = 100
-): Promise<CatalogItem[]> {
-  const { items } = await listCatalogoItems(name, { page, pageSize });
-  return items;
+/** ===== Caché en memoria + de-dupe de requests ===== */
+type CacheEntry<T> = { ts: number; data: T }
+const CACHE = new Map<string, CacheEntry<any>>()
+const INFLIGHT = new Map<string, Promise<any>>()
+const TTL_MS = 60_000 // 1 minuto (ajústalo si quieres)
+
+function cacheKey(method: string, url: string) {
+  return `${method.toUpperCase()} ${url}`
 }
 
+async function getWithCache<T>(url: string, opts?: { ttl?: number; signal?: AbortSignal }): Promise<T> {
+  const key = cacheKey('GET', url)
+  const now = Date.now()
+  const ttl = opts?.ttl ?? TTL_MS
+
+  const cached = CACHE.get(key)
+  if (cached && now - cached.ts < ttl) {
+    return cached.data as T
+  }
+
+  if (INFLIGHT.has(key)) {
+    return INFLIGHT.get(key)! as Promise<T>
+  }
+
+  const p = api.get(url, { signal: opts?.signal })
+    .then(({ data }) => {
+      CACHE.set(key, { ts: Date.now(), data })
+      INFLIGHT.delete(key)
+      return data as T
+    })
+    .catch((e) => {
+      INFLIGHT.delete(key)
+      throw e
+    })
+
+  INFLIGHT.set(key, p)
+  return p
+}
 
 const norm = (r: any): Opcion => ({
   id:
@@ -106,12 +135,10 @@ const norm = (r: any): Opcion => ({
 
 /* ============================
  * Estados de incendio (catálogo maestro)
- * Rutas: GET /estados_incendio (+ opcional admin POST/PATCH/DELETE)
  * ============================ */
-export async function getEstadosIncendio(): Promise<EstadoIncendio[]> {
-  const { data } = await api.get<{ items: any[] }>(`/estados_incendio`)
-  const arr = (data?.items ?? [])
-  return arr.map((r: any) => ({
+export async function getEstadosIncendio(signal?: AbortSignal): Promise<EstadoIncendio[]> {
+  const { items } = await getWithCache<{ items: any[] }>(`/estados_incendio`, { signal })
+  return (items ?? []).map((r: any) => ({
     id: r?.estado_incendio_uuid || r?.id || r?.uuid,
     codigo: r?.codigo,
     nombre: r?.nombre,
@@ -137,11 +164,11 @@ export async function deleteEstadoIncendio(id: UUID) {
 /* ============================
  * Roles (admin)  /roles
  * ============================ */
-export async function listRoles(page = 1, pageSize = 100): Promise<Paginated<Rol>> {
+export async function listRoles(page = 1, pageSize = 100, signal?: AbortSignal): Promise<Paginated<Rol>> {
   const q = new URLSearchParams()
   setQP(q, 'page', page)
   setQP(q, 'pageSize', pageSize)
-  const { data } = await api.get<Paginated<any>>(`/roles?${q.toString()}`)
+  const data = await getWithCache<Paginated<any>>(`/roles?${q.toString()}`, { signal })
   return {
     ...data,
     items: (data.items ?? []).map((r: any) => ({
@@ -152,8 +179,8 @@ export async function listRoles(page = 1, pageSize = 100): Promise<Paginated<Rol
     })),
   }
 }
-export async function getRol(id: UUID): Promise<Rol> {
-  const { data } = await api.get<any>(`/roles/${id}`)
+export async function getRol(id: UUID, signal?: AbortSignal): Promise<Rol> {
+  const data = await getWithCache<any>(`/roles/${id}`, { signal })
   return {
     id: data?.rol_uuid || data?.id || data?.uuid,
     nombre: data?.nombre,
@@ -177,12 +204,12 @@ export async function deleteRol(id: UUID) {
 /* ============================
  * Instituciones  /instituciones
  * ============================ */
-export async function listInstituciones(params?: { page?: number; pageSize?: number; q?: string }): Promise<Paginated<Institucion>> {
+export async function listInstituciones(params?: { page?: number; pageSize?: number; q?: string; signal?: AbortSignal }): Promise<Paginated<Institucion>> {
   const q = new URLSearchParams()
   setQP(q, 'page', params?.page ?? 1)
   setQP(q, 'pageSize', params?.pageSize ?? 50)
   setQP(q, 'q', params?.q)
-  const { data } = await api.get<Paginated<any>>(`/instituciones?${q.toString()}`)
+  const data = await getWithCache<Paginated<any>>(`/instituciones?${q.toString()}`, { signal: params?.signal })
   return {
     ...data,
     items: (data.items ?? []).map((r: any) => ({
@@ -192,8 +219,8 @@ export async function listInstituciones(params?: { page?: number; pageSize?: num
     })),
   }
 }
-export async function getInstitucion(id: UUID): Promise<Institucion> {
-  const { data } = await api.get<any>(`/instituciones/${id}`)
+export async function getInstitucion(id: UUID, signal?: AbortSignal): Promise<Institucion> {
+  const data = await getWithCache<any>(`/instituciones/${id}`, { signal })
   return {
     id: data?.institucion_uuid || data?.id || data?.uuid,
     nombre: data?.nombre,
@@ -216,9 +243,9 @@ export async function deleteInstitucion(id: UUID) {
 /* ============================
  * Departamentos / Municipios
  * ============================ */
-export async function listDepartamentos(): Promise<Departamento[]> {
-  const { data } = await api.get<{ items: any[] }>(`/departamentos`)
-  return (data?.items ?? []).map((d: any) => ({
+export async function listDepartamentos(signal?: AbortSignal): Promise<Departamento[]> {
+  const { items } = await getWithCache<{ items: any[] }>(`/departamentos`, { signal })
+  return (items ?? []).map((d: any) => ({
     id: d?.departamento_uuid || d?.id || d?.uuid,
     nombre: d?.nombre,
     codigo: d?.codigo ?? null,
@@ -244,6 +271,7 @@ export async function listDepartamentosPaged(params?: {
   pageSize?: number;
   q?: string;
   withMunicipios?: boolean;
+  signal?: AbortSignal;
 }): Promise<Paginated<Departamento & { municipios?: Municipio[] }>> {
   const qsp = new URLSearchParams()
   if (params?.page) qsp.set('page', String(params.page))
@@ -251,7 +279,7 @@ export async function listDepartamentosPaged(params?: {
   if (params?.q) qsp.set('q', params.q)
   if (params?.withMunicipios) qsp.set('withMunicipios', '1')
 
-  const { data } = await api.get(`/departamentos?${qsp.toString()}`)
+  const data = await getWithCache<any>(`/departamentos?${qsp.toString()}`, { signal: params?.signal })
 
   const items = (data?.items ?? []).map((d: any) => ({
     id: d?.id ?? d?.departamento_uuid ?? d?.uuid,
@@ -278,9 +306,9 @@ export async function listDepartamentosPaged(params?: {
   }
 }
 
-export async function listMunicipios(departamentoId: UUID): Promise<Municipio[]> {
-  const { data } = await api.get<{ items: any[] }>(`/departamentos/${departamentoId}/municipios`)
-  return (data?.items ?? []).map((m: any) => ({
+export async function listMunicipios(departamentoId: UUID, signal?: AbortSignal): Promise<Municipio[]> {
+  const { items } = await getWithCache<{ items: any[] }>(`/departamentos/${departamentoId}/municipios`, { signal })
+  return (items ?? []).map((m: any) => ({
     id: m?.municipio_uuid || m?.id || m?.uuid,
     nombre: m?.nombre,
     departamentoId,
@@ -303,12 +331,10 @@ export async function deleteMunicipio(id: UUID) {
 
 /* ============================
  * Catálogos de cierre /catalogos/*
- * GET + (admin) POST/PATCH/DELETE
- * (helpers simples)
  * ============================ */
-async function getCatalogo(path: string) {
-  const { data } = await api.get<{ items: any[] }>(`/catalogos/${path}`)
-  return (data?.items ?? []).map(norm)
+async function getCatalogo(path: string, signal?: AbortSignal) {
+  const { items } = await getWithCache<{ items: any[] }>(`/catalogos/${path}`, { signal })
+  return (items ?? []).map(norm)
 }
 async function postCatalogo(path: string, payload: { nombre: string }) {
   const { data } = await api.post<any>(`/catalogos/${path}`, payload)
@@ -340,11 +366,12 @@ export type ListCatalogoParams = {
   page?: number;
   pageSize?: number;
   q?: string;
+  signal?: AbortSignal;
 };
 
-export async function listCatalogNames(): Promise<string[]> {
-  const { data } = await api.get<{ items: string[] }>('/catalogos');
-  return data?.items ?? [];
+export async function listCatalogNames(signal?: AbortSignal): Promise<string[]> {
+  const { items } = await getWithCache<{ items: string[] }>('/catalogos', { signal })
+  return items ?? []
 }
 
 export async function listCatalogoItems(
@@ -356,7 +383,10 @@ export async function listCatalogoItems(
   if (params?.pageSize) q.set('pageSize', String(params.pageSize));
   if (params?.q) q.set('q', params.q);
 
-  const { data } = await api.get(`/catalogos/${catalogo}${q.toString() ? `?${q}` : ''}`);
+  const data = await getWithCache<any>(
+    `/catalogos/${catalogo}${q.toString() ? `?${q}` : ''}`,
+    { signal: params?.signal }
+  );
 
   const items = (data?.items ?? []).map((r: any) => ({
     id: r?.id ?? r?.uuid,
@@ -374,8 +404,8 @@ export async function listCatalogoItems(
   };
 }
 
-export async function getCatalogoItem(catalogo: string, id: UUID): Promise<CatalogoItem> {
-  const { data } = await api.get(`/catalogos/${catalogo}/${id}`);
+export async function getCatalogoItem(catalogo: string, id: UUID, signal?: AbortSignal): Promise<CatalogoItem> {
+  const data = await getWithCache<any>(`/catalogos/${catalogo}/${id}`, { signal })
   return {
     id: data?.id ?? data?.uuid,
     nombre: data?.nombre ?? '',
@@ -391,7 +421,6 @@ export async function createCatalogoItem(
 ): Promise<CatalogoItem> {
   const body: any = { nombre: payload.nombre };
   if (typeof payload.descripcion !== 'undefined') body.descripcion = payload.descripcion; // Solo roles
-
   const { data } = await api.post(`/catalogos/${catalogo}`, body);
   return {
     id: data?.id ?? data?.uuid,
@@ -410,7 +439,6 @@ export async function updateCatalogoItem(
   const body: any = {};
   if (typeof payload.nombre === 'string') body.nombre = payload.nombre;
   if (typeof payload.descripcion !== 'undefined') body.descripcion = payload.descripcion;
-
   const { data } = await api.patch(`/catalogos/${catalogo}/${id}`, body);
   return {
     id: data?.id ?? data?.uuid,
@@ -427,59 +455,49 @@ export async function deleteCatalogoItem(catalogo: string, id: UUID) {
 }
 
 /* ============================
- * Wrappers “legacy” ajustados a los nombres NUEVOS del backend
+ * Wrappers “legacy”
  * ============================ */
-
-/* Tipos de incendio (YA coincide con back) */
-export const getTiposIncendio = () => getCatalogo('tipos_incendio')
+export const getTiposIncendio = (signal?: AbortSignal) => getCatalogo('tipos_incendio', signal)
 export const createTipoIncendio = (p: { nombre: string }) => postCatalogo('tipos_incendio', p)
 export const updateTipoIncendio = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('tipos_incendio', id, p)
 export const deleteTipoIncendio = (id: UUID) => deleteCatalogo('tipos_incendio', id)
 
-/* Tipos de propiedad (YA coincide con back) */
-export const getTiposPropiedad = () => getCatalogo('tipo_propiedad')
+export const getTiposPropiedad = (signal?: AbortSignal) => getCatalogo('tipo_propiedad', signal)
 export const createTipoPropiedad = (p: { nombre: string }) => postCatalogo('tipo_propiedad', p)
 export const updateTipoPropiedad = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('tipo_propiedad', id, p)
 export const deleteTipoPropiedad = (id: UUID) => deleteCatalogo('tipo_propiedad', id)
 
-/* Causas (ANTES era 'causas', AHORA 'causas_catalogo') */
-export const getCausas = () => getCatalogo('causas_catalogo')
+export const getCausas = (signal?: AbortSignal) => getCatalogo('causas_catalogo', signal)
 export const createCausa = (p: { nombre: string }) => postCatalogo('causas_catalogo', p)
 export const updateCausa = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('causas_catalogo', id, p)
 export const deleteCausa = (id: UUID) => deleteCatalogo('causas_catalogo', id)
 
-/* Iniciado junto a (ANTES 'iniciado_junto_a', AHORA 'iniciado_junto_a_catalogo') */
-export const getIniciadoJuntoA = () => getCatalogo('iniciado_junto_a_catalogo')
+export const getIniciadoJuntoA = (signal?: AbortSignal) => getCatalogo('iniciado_junto_a_catalogo', signal)
 export const createIniciadoJuntoA = (p: { nombre: string }) => postCatalogo('iniciado_junto_a_catalogo', p)
 export const updateIniciadoJuntoA = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('iniciado_junto_a_catalogo', id, p)
 export const deleteIniciadoJuntoA = (id: UUID) => deleteCatalogo('iniciado_junto_a_catalogo', id)
 
-/* Medios aéreos (ANTES 'medios_aereos', AHORA 'medios_aereos_catalogo') */
-export const getMediosAereos = () => getCatalogo('medios_aereos_catalogo')
+export const getMediosAereos = (signal?: AbortSignal) => getCatalogo('medios_aereos_catalogo', signal)
 export const createMedioAereo = (p: { nombre: string }) => postCatalogo('medios_aereos_catalogo', p)
 export const updateMedioAereo = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('medios_aereos_catalogo', id, p)
 export const deleteMedioAereo = (id: UUID) => deleteCatalogo('medios_aereos_catalogo', id)
 
-/* Medios terrestres (ANTES 'medios_terrestres', AHORA 'medios_terrestres_catalogo') */
-export const getMediosTerrestres = () => getCatalogo('medios_terrestres_catalogo')
+export const getMediosTerrestres = (signal?: AbortSignal) => getCatalogo('medios_terrestres_catalogo', signal)
 export const createMedioTerrestre = (p: { nombre: string }) => postCatalogo('medios_terrestres_catalogo', p)
 export const updateMedioTerrestre = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('medios_terrestres_catalogo', id, p)
 export const deleteMedioTerrestre = (id: UUID) => deleteCatalogo('medios_terrestres_catalogo', id)
 
-/* Medios acuáticos (ANTES 'medios_acuaticos', AHORA 'medios_acuaticos_catalogo') */
-export const getMediosAcuaticos = () => getCatalogo('medios_acuaticos_catalogo')
+export const getMediosAcuaticos = (signal?: AbortSignal) => getCatalogo('medios_acuaticos_catalogo', signal)
 export const createMedioAcuatico = (p: { nombre: string }) => postCatalogo('medios_acuaticos_catalogo', p)
 export const updateMedioAcuatico = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('medios_acuaticos_catalogo', id, p)
 export const deleteMedioAcuatico = (id: UUID) => deleteCatalogo('medios_acuaticos_catalogo', id)
 
-/* Abastos (ANTES 'abastos', AHORA 'abastos_catalogo') */
-export const getAbastos = () => getCatalogo('abastos_catalogo')
+export const getAbastos = (signal?: AbortSignal) => getCatalogo('abastos_catalogo', signal)
 export const createAbasto = (p: { nombre: string }) => postCatalogo('abastos_catalogo', p)
 export const updateAbasto = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('abastos_catalogo', id, p)
 export const deleteAbasto = (id: UUID) => deleteCatalogo('abastos_catalogo', id)
 
-/* Técnicas de extinción (ANTES 'tecnicas_extincion', AHORA 'tecnicas_extincion_catalogo') */
-export const getTecnicasExtincion = () => getCatalogo('tecnicas_extincion_catalogo')
+export const getTecnicasExtincion = (signal?: AbortSignal) => getCatalogo('tecnicas_extincion_catalogo', signal)
 export const createTecnicaExtincion = (p: { nombre: string }) => postCatalogo('tecnicas_extincion_catalogo', p)
 export const updateTecnicaExtincion = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('tecnicas_extincion_catalogo', id, p)
 export const deleteTecnicaExtincion = (id: UUID) => deleteCatalogo('tecnicas_extincion_catalogo', id)
@@ -487,7 +505,7 @@ export const deleteTecnicaExtincion = (id: UUID) => deleteCatalogo('tecnicas_ext
 /* ============================
  * Pre-carga en paralelo
  * ============================ */
-export async function preloadCatalogosBasicos() {
+export async function preloadCatalogosBasicos(signal?: AbortSignal) {
   const [
     estados,
     tiposIncendio,
@@ -501,17 +519,17 @@ export async function preloadCatalogosBasicos() {
     tecnicas,
     departamentos,
   ] = await Promise.all([
-    getEstadosIncendio(),
-    getTiposIncendio(),
-    getTiposPropiedad(),
-    getCausas(),
-    getIniciadoJuntoA(),
-    getMediosAereos(),
-    getMediosTerrestres(),
-    getMediosAcuaticos(),
-    getAbastos(),
-    getTecnicasExtincion(),
-    listDepartamentos(),
+    getEstadosIncendio(signal),
+    getTiposIncendio(signal),
+    getTiposPropiedad(signal),
+    getCausas(signal),
+    getIniciadoJuntoA(signal),
+    getMediosAereos(signal),
+    getMediosTerrestres(signal),
+    getMediosAcuaticos(signal),
+    getAbastos(signal),
+    getTecnicasExtincion(signal),
+    listDepartamentos(signal),
   ])
 
   return {

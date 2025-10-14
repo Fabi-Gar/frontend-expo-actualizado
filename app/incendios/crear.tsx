@@ -1,10 +1,11 @@
 // app/incendios/crear.tsx
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { View, StyleSheet, ScrollView, Alert } from 'react-native';
 import { Appbar, TextInput, Button, Text, HelperText, ActivityIndicator } from 'react-native-paper';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Yup from 'yup';
 import { Formik, FormikProps } from 'formik';
+import NetInfo from '@react-native-community/netinfo';
 
 import { getCurrentCoords } from '@/hooks/location';
 import MapPickerModal from '@/components/MapPickerModal';
@@ -66,14 +67,73 @@ export default function CrearIncendioConReporte() {
   // Seed inicial
   const seedRef = useRef<FormValues | null>(null);
 
-  // Carga inicial de catálogos
+  // Evitar doble carga en dev (StrictMode/Expo)
+  const didInitRef = useRef(false);
+
+  // ===== Helpers de error (amigable + log técnico) =====
+  const reportError = useCallback((err: unknown, fallback = 'Ocurrió un error') => {
+    const e: any = err || {};
+    const status = e?.response?.status;
+    const retryAfter = e?.response?.headers?.['retry-after'];
+    const url = e?.config?.url;
+
+    // Log detallado a consola (para depurar)
+    console.error('[CREAR][ERROR]', {
+      status,
+      url,
+      retryAfter,
+      message: e?.message,
+      data: e?.response?.data,
+    });
+
+    let msg =
+      e?.response?.data?.error?.message ||
+      e?.response?.data?.message ||
+      e?.message ||
+      fallback;
+
+    if (status === 429) {
+      const seconds = Number(retryAfter);
+      msg =
+        Number.isFinite(seconds) && seconds > 0
+          ? `Demasiadas solicitudes. Inténtalo de nuevo en ${seconds} s.`
+          : 'Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.';
+    } else if (status === 503) {
+      msg = 'Servicio temporalmente no disponible. Inténtalo más tarde.';
+    } else if (status === 502) {
+      msg = 'Hubo un problema con el servidor. Reintenta en breve.';
+    } else if (e?.request && !e?.response) {
+      msg = 'Sin respuesta del servidor. Verifica tu conexión.';
+    }
+
+    Alert.alert('Error', String(msg));
+  }, []);
+
+  /* ============================
+   * Carga inicial de catálogos
+   * - AbortController para cancelar si navegas rápido
+   * - Usa `signal` soportado por los servicios (con cache/de-dupe)
+   * ============================ */
   useEffect(() => {
+    if (didInitRef.current) return;
+    didInitRef.current = true;
+
+    const ac = new AbortController();
+
     (async () => {
       try {
+        // Si no hay internet, avisa temprano (no aborta)
+        const net = await NetInfo.fetch();
+        if (!(net.isConnected && net.isInternetReachable)) {
+          Alert.alert('Sin conexión', 'Conéctate a internet para cargar los catálogos.');
+        }
+
         const [mediosResp, deptosResp] = await Promise.all([
-          listCatalogoItems('medios', { pageSize: 200 }),
-          listDepartamentos(),
+          listCatalogoItems('medios', { pageSize: 200, signal: ac.signal }),
+          listDepartamentos(ac.signal),
         ]);
+
+        if (ac.signal.aborted) return;
 
         setMedios((mediosResp.items || []).map((m: any) => ({ id: String(m.id), label: m.nombre })));
         setDeptos((deptosResp || []).map((d: any) => ({ id: String(d.id), label: d.nombre })));
@@ -94,26 +154,57 @@ export default function CrearIncendioConReporte() {
           finca: '',
         };
       } catch (e) {
-        Alert.alert('Error', 'No se pudieron cargar catálogos');
+        if (ac.signal.aborted) return; // navegación rápida → ignorar
+        reportError(e, 'No se pudieron cargar catálogos');
+        // Seed mínimo para no romper el form
+        seedRef.current = {
+          titulo: '',
+          descripcion: '',
+          lat: pLat ? String(pLat) : '',
+          lng: pLng ? String(pLng) : '',
+          medioId: null,
+          deptoId: null,
+          muniId: null,
+          telefono: '',
+          observaciones: '',
+          lugarPoblado: '',
+          finca: '',
+        };
       } finally {
-        setInitLoading(false);
+        if (!ac.signal.aborted) setInitLoading(false);
       }
     })();
-  }, [pLat, pLng]);
 
-  // Al cambiar departamento, cargar municipios
-  const loadMunicipios = async (deptoId?: string | null) => {
+    return () => ac.abort();
+  }, [pLat, pLng, reportError]);
+
+  /* ============================
+   * Municipios dependientes
+   * - takeLatest: descarta respuestas viejas
+   * - AbortController por llamada
+   * ============================ */
+  const muniReqIdRef = useRef(0);
+  const loadMunicipios = useCallback(async (deptoId?: string | null) => {
+    muniReqIdRef.current += 1;
+    const reqId = muniReqIdRef.current;
+
     if (!deptoId) {
       setMunis([]);
       return;
     }
+
+    const ac = new AbortController();
     try {
-      const arr = await listMunicipios(String(deptoId));
+      const arr = await listMunicipios(String(deptoId), ac.signal);
+      if (ac.signal.aborted || reqId !== muniReqIdRef.current) return; // llegó tarde/abortado
       setMunis((arr || []).map((m: any) => ({ id: String(m.id), label: m.nombre })));
-    } catch {
+    } catch (e) {
+      if (ac.signal.aborted || reqId !== muniReqIdRef.current) return;
+      console.warn('[CREAR][municipios] fallo', e);
       setMunis([]);
+      Alert.alert('Aviso', 'No se pudieron cargar municipios para el departamento seleccionado.');
     }
-  };
+  }, []);
 
   if (initLoading || !seedRef.current) {
     return (
@@ -128,56 +219,49 @@ export default function CrearIncendioConReporte() {
     id ? (arr.find((x) => String(x.id) === String(id))?.label ?? '') : '';
 
   // Submit
-const handleSubmitCreate = async (values: FormValues) => {
-  try {
-    setLoading(true);
+  const handleSubmitCreate = async (values: FormValues) => {
+    try {
+      setLoading(true);
 
-    const latN = Number(values.lat);
-    const lonN = Number(values.lng);
+      const latN = Number(values.lat);
+      const lonN = Number(values.lng);
 
-    if (!Number.isFinite(latN) || !Number.isFinite(lonN)) {
-      Alert.alert('Revisa', 'Coordenadas inválidas');
-      return;
+      if (!Number.isFinite(latN) || !Number.isFinite(lonN)) {
+        Alert.alert('Revisa', 'Coordenadas inválidas');
+        return;
+      }
+      if (!values.medioId) {
+        Alert.alert('Revisa', 'Selecciona el medio del reporte');
+        return;
+      }
+
+      // Payload plano para /incendios/with-reporte
+      const payload = {
+        titulo: values.titulo.trim(),
+        descripcion: values.descripcion?.trim() || null,
+        centroide: { type: 'Point' as const, coordinates: [lonN, latN] as [number, number] },
+        reporte: {
+          medio_uuid: String(values.medioId),
+          ubicacion: { type: 'Point' as const, coordinates: [lonN, latN] as [number, number] },
+          reportado_en: new Date().toISOString(),
+          observaciones: values.observaciones?.trim() || null,
+          telefono: values.telefono?.trim() || null,
+          departamento_uuid: values.deptoId || null,
+          municipio_uuid: values.muniId || null,
+          lugar_poblado: values.lugarPoblado?.trim() || null,
+          finca: values.finca?.trim() || null,
+        },
+      };
+
+      await createIncendioWithReporte(payload);
+      Alert.alert('Listo', 'Incendio creado con reporte');
+      router.replace('/mapa');
+    } catch (e: any) {
+      reportError(e, 'No se pudo guardar');
+    } finally {
+      setLoading(false);
     }
-    if (!values.medioId) {
-      Alert.alert('Revisa', 'Selecciona el medio del reporte');
-      return;
-    }
-
-    // Payload plano para /incendios/with-reporte
-    const payload = {
-      titulo: values.titulo.trim(),
-      descripcion: values.descripcion?.trim() || null,
-      centroide: { type: 'Point' as const, coordinates: [lonN, latN] as [number, number] },
-      // estado_incendio_uuid: '...opcional...', // si quieres forzar uno
-      reporte: {
-        medio_uuid: String(values.medioId),
-        ubicacion: { type: 'Point' as const, coordinates: [lonN, latN] as [number, number] },
-        reportado_en: new Date().toISOString(),
-        observaciones: values.observaciones?.trim() || null,
-        telefono: values.telefono?.trim() || null,
-        departamento_uuid: values.deptoId || null,
-        municipio_uuid: values.muniId || null,
-        lugar_poblado: values.lugarPoblado?.trim() || null,
-        finca: values.finca?.trim() || null,
-        // institucion_uuid y reportado_por_* los resuelve el server con el token
-      },
-    };
-
-    await createIncendioWithReporte(payload);
-    Alert.alert('Listo', 'Incendio creado con reporte');
-    router.replace('/mapa');
-  } catch (e: any) {
-    const msg =
-      e?.response?.data?.error?.message ||
-      e?.response?.data?.error ||
-      'No se pudo guardar';
-    Alert.alert('Error', String(msg));
-  } finally {
-    setLoading(false);
-  }
-};
-
+  };
 
   const seed = seedRef.current;
 
@@ -254,13 +338,17 @@ const handleSubmitCreate = async (values: FormValues) => {
                 <Button
                   mode="outlined"
                   onPress={async () => {
-                    const c = await getCurrentCoords();
-                    if (!c) {
-                      Alert.alert('Permiso', 'Ubicación no disponible');
-                      return;
+                    try {
+                      const c = await getCurrentCoords();
+                      if (!c) {
+                        Alert.alert('Permiso', 'Ubicación no disponible');
+                        return;
+                      }
+                      await setFieldValue('lat', String(c.lat));
+                      await setFieldValue('lng', String(c.lng));
+                    } catch (e) {
+                      reportError(e, 'No se pudo obtener tu ubicación');
                     }
-                    await setFieldValue('lat', String(c.lat));
-                    await setFieldValue('lng', String(c.lng));
                   }}
                   style={{ marginBottom: 8 }}
                 >

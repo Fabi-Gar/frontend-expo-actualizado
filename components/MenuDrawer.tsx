@@ -67,9 +67,9 @@ export const MenuDrawer = ({ animation, onClose, onNavigate, isAdmin = false }: 
         <>
           <Text style={[styles.section, { marginTop: 18 }]}>Administración</Text>
 
-          <TouchableOpacity style={styles.option} onPress={() => onNavigate('Etiquetas')}>
+          <TouchableOpacity style={styles.option} onPress={() => onNavigate('Catalogo Incendio')}>
             <Ionicons name="pricetags" size={20} color="#37474F" style={styles.icon} />
-            <Text style={styles.optionText}>Etiquetas</Text>
+            <Text style={styles.optionText}>Catalogos genericos</Text>
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.option} onPress={() => onNavigate('Estados')}>

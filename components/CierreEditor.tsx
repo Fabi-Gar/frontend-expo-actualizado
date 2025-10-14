@@ -8,6 +8,7 @@ import {
   ScrollView,
   Platform,
   Pressable,
+  Alert,
 } from 'react-native';
 import {
   Text,
@@ -33,6 +34,23 @@ import {
   listCatalogoItems,
   type CatalogoItem,
 } from '@/services/catalogos';
+
+
+const tecnicaSlugFromNombre = (nombre?: string) => {
+  const s = (nombre || '').trim().toLowerCase();
+  if (!s) return undefined;
+  if (s.includes('direct')) return 'directo';
+  if (s.includes('indirect')) return 'indirecto';
+  if (s.includes('control') && s.includes('natural')) return 'control_natural';
+  return undefined;
+};
+
+// Busca el id del catálogo que corresponde a un slug del back
+const tecnicaIdFromSlug = (slug: 'directo' | 'indirecto' | 'control_natural', tecnicasCat: CatalogoItem[]) => {
+  const item = tecnicasCat.find((t) => tecnicaSlugFromNombre(t.nombre) === slug);
+  return item?.id;
+};
+
 
 /* =======================
  * Diálogo de selección
@@ -142,7 +160,6 @@ function DateTimeField({
     const d = new Date(tmp);
     d.setFullYear(date.getFullYear(), date.getMonth(), date.getDate());
     setTmp(d);
-    // pasa a hora
     setStep('time');
   };
 
@@ -171,7 +188,6 @@ function DateTimeField({
         style={{ flex: 1, minWidth: 160 }}
       />
 
-      {/* Capa oscura cuando hay un paso abierto */}
       {step !== 'closed' && (
         <Modal visible transparent animationType="fade" onRequestClose={closeAll} presentationStyle="overFullScreen">
           <TouchableWithoutFeedback onPress={closeAll}>
@@ -283,18 +299,16 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
   const [supFuera, setSupFuera] = useState<number | undefined>(undefined);
   const [supNombreAP, setSupNombreAP] = useState<string | undefined>(undefined);
 
-  // recalcula total como dentro + fuera (cuando cambien)
-    useEffect(() => {
+  useEffect(() => {
     const total =
-        (typeof supDentro === 'number' ? supDentro : 0) +
-        (typeof supFuera === 'number' ? supFuera : 0);
-    // si ambos están indefinidos y total es 0, deja total vacío
+      (typeof supDentro === 'number' ? supDentro : 0) +
+      (typeof supFuera === 'number' ? supFuera : 0);
     if (typeof supDentro !== 'number' && typeof supFuera !== 'number') {
-        setSupTotal(undefined);
+      setSupTotal(undefined);
     } else {
-        setSupTotal(total);
+      setSupTotal(total);
     }
-    }, [supDentro, supFuera]);
+  }, [supDentro, supFuera]);
 
   type SVRow = {
     ubicacion: 'DENTRO_AP' | 'FUERA_AP';
@@ -326,6 +340,10 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
   const [dlgTipoOpen, setDlgTipoOpen] = useState(false);
   const [dlgIniciadoOpen, setDlgIniciadoOpen] = useState(false);
   const [dlgCausaOpen, setDlgCausaOpen] = useState(false);
+
+  // Helpers de suma
+  const sumValues = (obj: Record<string, number>) =>
+    Object.values(obj).reduce((acc, n) => acc + (Number.isFinite(n) ? Number(n) : 0), 0);
 
   // Carga
   const reload = useCallback(async () => {
@@ -376,9 +394,16 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
 
       setSv([]);
 
+      // t.tecnica viene como slug del enum; lo mapeamos a id de catálogo para el UI
       const tb: Record<string, number> = {};
-      for (const t of c.tecnicas || []) tb[t.tecnica] = Number(t.pct || 0);
+      for (const t of c.tecnicas || []) {
+        const slug = (t as any).tecnica as 'directo' | 'indirecto' | 'control_natural' | undefined;
+        if (!slug) continue;
+        const id = tecnicaIdFromSlug(slug, tecnicasCat);
+        if (id) tb[id] = Number((t as any).pct || 0);
+      }
       setTecById(tb);
+
 
       const mt: Record<string, number> = {};
       (c.medios?.terrestres || []).forEach((m) => (mt[m.medio_terrestre_id] = Number(m.cantidad || 0)));
@@ -412,7 +437,7 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
     } finally {
       setLoading(false);
     }
-  }, [incendioId, loadCatalog]);
+  }, [incendioId, loadCatalog, tecnicasCat]);
 
   useEffect(() => {
     if (visible) reload();
@@ -463,10 +488,21 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
 
     if (sv.length) payload.superficie_vegetacion = sv;
 
-    const tecArr = Object.entries(tecById)
-      .filter(([_, pct]) => Number(pct) > 0)
-      .map(([tecnica, pct]) => ({ tecnica, pct: Number(pct) }));
+    // 🔧 TECNICAS: enviar `tecnica_id`
+    // Convertimos id -> slug del enum que acepta el back
+    const tecArr: { tecnica: 'directo' | 'indirecto' | 'control_natural'; pct: number }[] = [];
+    for (const [id, pct0] of Object.entries(tecById)) {
+      const pct = Number(pct0);
+      if (!(pct > 0)) continue;
+      const nombre = tecnicasCat.find((t) => t.id === id)?.nombre;
+      const slug = tecnicaSlugFromNombre(nombre);
+      if (slug === 'directo' || slug === 'indirecto' || slug === 'control_natural') {
+        tecArr.push({ tecnica: slug, pct });
+      }
+    }
+    // solo incluir si hay algo válido
     if (tecArr.length) payload.tecnicas = tecArr;
+
 
     const mtArr = Object.entries(medTerCant)
       .filter(([_, c]) => Number(c) > 0)
@@ -515,49 +551,55 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
     if (nota && nota.trim().length) payload.nota = nota.trim();
 
     return payload;
-  }, [
-    tipoPrincipalId,
-    compArray,
-    topoPlano,
-    topoOndulado,
-    topoQuebrado,
-    propSel,
-    iniciadoId,
-    iniciadoOtro,
-    scTer,
-    scAer,
-    scCtrl,
-    scExt,
-    supTotal,
-    supDentro,
-    supFuera,
-    supNombreAP,
-    sv,
-    tecById,
-    medTerCant,
-    medAerPct,
-    medAcuCant,
-    instSel,
-    abastoCant,
-    causaId,
-    causaOtro,
-    tempC,
-    hrPct,
-    vientoVel,
-    vientoDir,
-    nota,
-  ]);
+  }, [tipoPrincipalId, compArray, topoPlano, topoOndulado, topoQuebrado, propSel, iniciadoId, iniciadoOtro, scTer, scAer, scCtrl, scExt, supTotal, supDentro, supFuera, supNombreAP, sv, medTerCant, medAerPct, medAcuCant, instSel, abastoCant, causaId, causaOtro, tempC, hrPct, vientoVel, vientoDir, nota, tecById, tecnicasCat]);
+
+  // Validación “client-side” de sumas (para evitar 400 del back)
+  const validateBeforeSave = useCallback(() => {
+    const sumTec = sumValues(tecById);
+    if (sumTec > 100.0001) {
+      Alert.alert('Revisa técnicas', `La suma de técnicas es ${sumTec}%. Debe ser ≤ 100%.`);
+      return false;
+    }
+    const sumAer = sumValues(medAerPct);
+    if (sumAer > 100.0001) {
+      Alert.alert('Revisa medios aéreos', `La suma de porcentajes aéreos es ${sumAer}%. Debe ser ≤ 100%.`);
+      return false;
+    }
+    const sumComp = sumValues(compById);
+    if (sumComp > 100.0001) {
+      Alert.alert('Revisa composición por tipo', `La suma de composición es ${sumComp}%. Debe ser ≤ 100%.`);
+      return false;
+    }
+    const sumTopo =
+      (typeof topoPlano === 'number' ? topoPlano : 0) +
+      (typeof topoOndulado === 'number' ? topoOndulado : 0) +
+      (typeof topoQuebrado === 'number' ? topoQuebrado : 0);
+    if (sumTopo > 100.0001) {
+      Alert.alert('Revisa topografía', `La suma de topografía es ${sumTopo}%. Debe ser ≤ 100%.`);
+      return false;
+    }
+    return true;
+  }, [tecById, medAerPct, compById, topoPlano, topoOndulado, topoQuebrado]);
 
   const handleSave = useCallback(async () => {
     try {
+      if (!validateBeforeSave()) return;
       setSaving(true);
       const payload = buildPayload();
       await patchCierreCatalogos(incendioId, payload);
       onSaved?.();
+    } catch (e: any) {
+      console.error('[CIERRE][PATCH][ERROR]', e?.response?.status, e?.response?.data || e);
+      const msg =
+        e?.response?.data?.error?.message ||
+        e?.response?.data?.message ||
+        e?.message ||
+        'No se pudo guardar';
+      Alert.alert('Error', String(msg));
     } finally {
       setSaving(false);
     }
-  }, [buildPayload, incendioId, onSaved]);
+  }, [buildPayload, incendioId, onSaved, validateBeforeSave]);
 
   const handleFinalizar = useCallback(async () => {
     try {
@@ -565,6 +607,13 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
       await finalizarCierre(incendioId);
       await reload();
       onSaved?.();
+    } catch (e: any) {
+      const msg =
+        e?.response?.data?.error?.message ||
+        e?.response?.data?.message ||
+        e?.message ||
+        'No se pudo finalizar';
+      Alert.alert('Error', String(msg));
     } finally {
       setClosing(false);
     }
@@ -576,6 +625,13 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
       await reabrirCierre(incendioId);
       await reload();
       onSaved?.();
+    } catch (e: any) {
+      const msg =
+        e?.response?.data?.error?.message ||
+        e?.response?.data?.message ||
+        e?.message ||
+        'No se pudo reabrir';
+      Alert.alert('Error', String(msg));
     } finally {
       setClosing(false);
     }
@@ -618,19 +674,17 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
     </Chip>
   );
 
-  // % dentro / fuera respecto al total
-    const dentroPctText = useMemo(() => {
+  const dentroPctText = useMemo(() => {
     if (typeof supTotal !== 'number' || supTotal <= 0 || typeof supDentro !== 'number') return '—';
     const pct = (supDentro / supTotal) * 100;
     return `${pct.toFixed(1)}%`;
-    }, [supTotal, supDentro]);
+  }, [supTotal, supDentro]);
 
-    const fueraPctText = useMemo(() => {
+  const fueraPctText = useMemo(() => {
     if (typeof supTotal !== 'number' || supTotal <= 0 || typeof supFuera !== 'number') return '—';
     const pct = (supFuera / supTotal) * 100;
     return `${pct.toFixed(1)}%`;
-    }, [supTotal, supFuera]);
-
+  }, [supTotal, supFuera]);
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
@@ -762,8 +816,7 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
             {/* Superficie */}
             <Text style={[styles.section, styles.txt]}>Superficie (ha)</Text>
             <View style={styles.row}>
-            {/* Total: solo lectura (suma) */}
-            <TextInput
+              <TextInput
                 mode="outlined"
                 dense
                 label="Total (auto)"
@@ -771,31 +824,30 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
                 editable={false}
                 right={<TextInput.Icon icon="information-outline" />}
                 style={{ width: 110 }}
-            />
-            <NumInput label="Dentro AP" value={supDentro} onChange={setSupDentro} />
-            <NumInput label="Fuera AP" value={supFuera} onChange={setSupFuera} />
+              />
+              <NumInput label="Dentro AP" value={supDentro} onChange={setSupDentro} />
+              <NumInput label="Fuera AP" value={supFuera} onChange={setSupFuera} />
             </View>
             <View style={[styles.row, { marginTop: 4 }]}>
-            <TextInput
+              <TextInput
                 mode="outlined"
                 dense
                 label="Área protegida (nombre)"
                 value={supNombreAP ?? ''}
                 onChangeText={(t) => setSupNombreAP(t || undefined)}
                 style={{ flex: 1, minWidth: 200 }}
-            />
+              />
             </View>
             <View style={[styles.row, { marginTop: 6 }]}>
-            <Text style={styles.txt}>
+              <Text style={styles.txt}>
                 % Dentro AP: <Text style={{ fontWeight: 'bold' }}>{dentroPctText}</Text>
-            </Text>
-            <Text style={styles.txt}>
+              </Text>
+              <Text style={styles.txt}>
                 % Fuera AP: <Text style={{ fontWeight: 'bold' }}>{fueraPctText}</Text>
-            </Text>
+              </Text>
             </View>
 
             <Divider style={styles.sep} />
-
 
             {/* Superficie por vegetación */}
             <Text style={[styles.section, styles.txt]}>Superficie por vegetación</Text>
@@ -995,6 +1047,7 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
                     onPress={() =>
                       setInstSel((prev) => {
                         const s = new Set(prev);
+                        // eslint-disable-next-line no-unused-expressions
                         checked ? s.delete(i.id) : s.add(i.id);
                         return s;
                       })
@@ -1075,13 +1128,13 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
             {/* Nota */}
             <Text style={[styles.section, styles.txt]}>Nota / comentario</Text>
             <TextInput
-            mode="outlined"
-            multiline
-            numberOfLines={3}
-            placeholder="Comentario breve para el feed de actualizaciones"
-            value={nota}
-            onChangeText={setNota}
-            style={{ marginHorizontal: 16 }}
+              mode="outlined"
+              multiline
+              numberOfLines={3}
+              placeholder="Comentario breve para el feed de actualizaciones"
+              value={nota}
+              onChangeText={setNota}
+              style={{ marginHorizontal: 16 }}
             />
 
             <View style={{ height: 24 }} />
@@ -1248,7 +1301,6 @@ const styles = StyleSheet.create({
   dialogTitle: { fontWeight: 'bold', fontSize: 16, marginBottom: 6 },
 
   sepLarge: { marginTop: 18, marginHorizontal: 16, backgroundColor: '#eee', height: StyleSheet.hairlineWidth },
-
 
   pickerCard: {
     position: 'absolute',

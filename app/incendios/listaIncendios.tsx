@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { View, StyleSheet, FlatList, TouchableOpacity, RefreshControl } from 'react-native';
-import { Text, TextInput, Chip, Menu, Divider, Button } from 'react-native-paper';
+import { Text, TextInput, Chip, Menu, Divider, Button, Snackbar } from 'react-native-paper';
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 
 import { listIncendios, Incendio, listIncendiosSinAprobar } from '@/services/incendios';
 import { getUser } from '@/session';
@@ -32,8 +32,7 @@ type AprobadoFilter = 'ALL' | 'APROBADOS' | 'NO_APROBADOS';
 export default function IncendiosList() {
   const [items, setItems] = useState<Incendio[]>([]);
   const [q, setQ] = useState('');
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [user, setUser] = useState<any>(null);
+  const [, setUser] = useState<any>(null);
   const [refreshing, setRefreshing] = useState(false);
 
   // estados de cierre por incendio_uuid/id
@@ -44,8 +43,65 @@ export default function IncendiosList() {
   const [estadoFilter, setEstadoFilter] = useState<string>('TODOS');
   const [estadoMenuVisible, setEstadoMenuVisible] = useState(false);
 
+  // error amigable
+  const [errorMsg, setErrorMsg] = useState('');
+
   // para inicializar el filtro por defecto (solo una vez) cuando sepamos si es admin
   const initRef = useRef(false);
+
+  // throttle / retry
+  const lastLoadRef = useRef(0);
+  const loadingRef = useRef(false);
+  const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => { if (retryRef.current) clearTimeout(retryRef.current); }, []);
+
+  const scheduleRetry = useCallback((ms: number) => {
+    if (retryRef.current) return;
+    retryRef.current = setTimeout(() => {
+      retryRef.current = null;
+      safeLoad();
+    }, ms);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const reportError = useCallback((err: unknown, fallback = 'No se pudieron cargar los incidentes. Intenta de nuevo.') => {
+    const anyErr = err as any;
+    const status = anyErr?.response?.status;
+    const retryAfter = anyErr?.response?.headers?.['retry-after'];
+
+    console.error('[LISTA][ERROR]', {
+      status,
+      url: anyErr?.config?.url,
+      method: anyErr?.config?.method,
+      retryAfter,
+      data: anyErr?.response?.data,
+      message: anyErr?.message,
+    });
+
+    let msg =
+      anyErr?.response?.data?.error ||
+      anyErr?.response?.data?.message ||
+      anyErr?.message ||
+      fallback;
+
+    if (status === 429) {
+      console.warn('[LISTA][RATE_LIMIT]', { retryAfter, url: anyErr?.config?.url });
+      const seconds = Number(retryAfter);
+      msg = seconds && Number.isFinite(seconds)
+        ? `Demasiadas solicitudes. Inténtalo de nuevo en ${seconds} s.`
+        : 'Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.';
+      scheduleRetry(Number.isFinite(seconds) ? Number(seconds) * 1000 : 3000);
+    } else if (status === 503) {
+      msg = 'Servicio temporalmente no disponible. Inténtalo más tarde.';
+    } else if (status === 502) {
+      msg = 'Hubo un problema con el servidor. Reintenta en breve.';
+    } else if (anyErr?.request && !anyErr?.response) {
+      msg = 'Sin respuesta del servidor. Verifica tu conexión.';
+    }
+
+    setErrorMsg(String(msg));
+  }, [scheduleRetry]);
 
   const fetchApproved = useCallback(async () => {
     const arr = await listIncendios(1, 50); // aprobados
@@ -80,8 +136,11 @@ export default function IncendiosList() {
               : 'Pendiente';
             acc[id] = estado;
           }
-        } catch {
+        } catch (e) {
+          // no rompas la lista si falla uno
           acc[id] = acc[id] || 'Pendiente';
+          const ae = e as any;
+          console.warn('[LISTA][getCierre] fallo id', id, ae?.response?.status ?? ae);
         }
       })
     );
@@ -89,17 +148,20 @@ export default function IncendiosList() {
     setCierreEstados((prev) => ({ ...prev, ...acc }));
   }, []);
 
-  const load = useCallback(async () => {
-    try {
-      setRefreshing(true);
+  const safeLoad = useCallback(async () => {
+    const now = Date.now();
+    if (loadingRef.current || now - lastLoadRef.current < 800) return;
 
+    loadingRef.current = true;
+    setRefreshing(true);
+    try {
       const u = await getUser();
       setUser(u);
       const admin = isAdminUser(u);
 
       if (admin && !initRef.current) {
         initRef.current = true;
-        setAprobFilter('NO_APROBADOS');
+        setAprobFilter((prev) => (prev === 'ALL' ? 'NO_APROBADOS' : prev));
       }
 
       let current: Incendio[] = [];
@@ -117,17 +179,24 @@ export default function IncendiosList() {
       }
 
       setItems(current);
-      loadCierreEstados(current);
-    } catch {
+      await loadCierreEstados(current);
+
+      setErrorMsg('');
+      lastLoadRef.current = Date.now();
+    } catch (e) {
       setItems([]);
+      reportError(e, 'No se pudieron cargar los incidentes. Intenta de nuevo.');
     } finally {
       setRefreshing(false);
+      loadingRef.current = false;
     }
-  }, [aprobFilter, fetchApproved, fetchPending, loadCierreEstados]);
+  }, [aprobFilter, fetchApproved, fetchPending, loadCierreEstados, reportError]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  // primera carga + al cambiar filtros
+  useEffect(() => { safeLoad(); }, [safeLoad]);
+
+  // al volver al foco de esta pantalla
+  useFocusEffect(useCallback(() => { safeLoad(); }, [safeLoad]));
 
   // estados únicos para el menú (derivados de los items visibles)
   const estadosUnicos = useMemo(() => {
@@ -265,7 +334,7 @@ export default function IncendiosList() {
         keyExtractor={(x) => String((x as any).id ?? (x as any).incendio_uuid)}
         ItemSeparatorComponent={() => <View style={styles.sep} />}
         contentContainerStyle={{ paddingBottom: 24 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={load} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={safeLoad} />}
         renderItem={({ item }) => {
           const itemId = String((item as any).id ?? (item as any).incendio_uuid);
           const updatedAt = (item as any).creadoEn || (item as any).fechaInicio || item.estadoActual?.fecha || null;
@@ -322,6 +391,16 @@ export default function IncendiosList() {
           </View>
         }
       />
+
+      {/* Error amigable */}
+      <Snackbar
+        visible={!!errorMsg}
+        onDismiss={() => setErrorMsg('')}
+        duration={3500}
+        action={{ label: 'OK', onPress: () => setErrorMsg('') }}
+      >
+        {errorMsg}
+      </Snackbar>
     </View>
   );
 }
