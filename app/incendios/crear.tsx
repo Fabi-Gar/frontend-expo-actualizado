@@ -1,11 +1,13 @@
 // app/incendios/crear.tsx
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, Alert } from 'react-native';
+import { View, StyleSheet, ScrollView, Alert, Image } from 'react-native';
 import { Appbar, TextInput, Button, Text, HelperText, ActivityIndicator } from 'react-native-paper';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Yup from 'yup';
 import { Formik, FormikProps } from 'formik';
 import NetInfo from '@react-native-community/netinfo';
+import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 
 import { getCurrentCoords } from '@/hooks/location';
 import MapPickerModal from '@/components/MapPickerModal';
@@ -13,6 +15,7 @@ import SingleSelectModal from '@/components/SelectorModals/SingleSelectModal';
 
 import { listCatalogoItems, listDepartamentos, listMunicipios } from '@/services/catalogos';
 import { createIncendioWithReporte } from '@/services/incendios';
+import { uploadReporteFoto } from '@/services/uploads';
 
 type Option = { id: string; label: string };
 
@@ -64,6 +67,10 @@ export default function CrearIncendioConReporte() {
   const [deptoModal, setDeptoModal] = useState(false);
   const [muniModal, setMuniModal] = useState(false);
 
+  // Foto opcional
+  const [pickedImage, setPickedImage] = useState<{ uri: string; fileName?: string | null; mimeType?: string | null } | null>(null);
+  const [uploadPct, setUploadPct] = useState(0);
+
   // Seed inicial
   const seedRef = useRef<FormValues | null>(null);
 
@@ -109,10 +116,36 @@ export default function CrearIncendioConReporte() {
     Alert.alert('Error', String(msg));
   }, []);
 
+  // Elegir foto (opcional)
+  const pickImage = useCallback(async () => {
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permisos', 'Necesitamos acceso a tus fotos para adjuntar la imagen.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        allowsMultipleSelection: false,
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 1, // original; comprimimos después
+        exif: false,
+      });
+      if (result.canceled) return;
+      const asset = result.assets?.[0];
+      if (!asset?.uri) return;
+
+      setPickedImage({
+        uri: asset.uri,
+        fileName: asset.fileName || `foto_${Date.now()}.jpg`,
+        mimeType: asset.mimeType || 'image/jpeg',
+      });
+    } catch (e) {
+      reportError(e, 'No se pudo seleccionar la imagen');
+    }
+  }, [reportError]);
+
   /* ============================
    * Carga inicial de catálogos
-   * - AbortController para cancelar si navegas rápido
-   * - Usa `signal` soportado por los servicios (con cache/de-dupe)
    * ============================ */
   useEffect(() => {
     if (didInitRef.current) return;
@@ -122,7 +155,6 @@ export default function CrearIncendioConReporte() {
 
     (async () => {
       try {
-        // Si no hay internet, avisa temprano (no aborta)
         const net = await NetInfo.fetch();
         if (!(net.isConnected && net.isInternetReachable)) {
           Alert.alert('Sin conexión', 'Conéctate a internet para cargar los catálogos.');
@@ -154,9 +186,8 @@ export default function CrearIncendioConReporte() {
           finca: '',
         };
       } catch (e) {
-        if (ac.signal.aborted) return; // navegación rápida → ignorar
+        if (ac.signal.aborted) return;
         reportError(e, 'No se pudieron cargar catálogos');
-        // Seed mínimo para no romper el form
         seedRef.current = {
           titulo: '',
           descripcion: '',
@@ -180,8 +211,6 @@ export default function CrearIncendioConReporte() {
 
   /* ============================
    * Municipios dependientes
-   * - takeLatest: descarta respuestas viejas
-   * - AbortController por llamada
    * ============================ */
   const muniReqIdRef = useRef(0);
   const loadMunicipios = useCallback(async (deptoId?: string | null) => {
@@ -196,7 +225,7 @@ export default function CrearIncendioConReporte() {
     const ac = new AbortController();
     try {
       const arr = await listMunicipios(String(deptoId), ac.signal);
-      if (ac.signal.aborted || reqId !== muniReqIdRef.current) return; // llegó tarde/abortado
+      if (ac.signal.aborted || reqId !== muniReqIdRef.current) return;
       setMunis((arr || []).map((m: any) => ({ id: String(m.id), label: m.nombre })));
     } catch (e) {
       if (ac.signal.aborted || reqId !== muniReqIdRef.current) return;
@@ -222,6 +251,13 @@ export default function CrearIncendioConReporte() {
   const handleSubmitCreate = async (values: FormValues) => {
     try {
       setLoading(true);
+
+      const net = await NetInfo.fetch();
+      if (!(net.isConnected && net.isInternetReachable)) {
+        Alert.alert('Sin conexión', 'Conéctate a internet para guardar.');
+        setLoading(false);
+        return;
+      }
 
       const latN = Number(values.lat);
       const lonN = Number(values.lng);
@@ -253,13 +289,43 @@ export default function CrearIncendioConReporte() {
         },
       };
 
-      await createIncendioWithReporte(payload);
+      // → ahora el servicio retorna { incendio, reporte_uuid }
+      const { incendio, reporte_uuid } = await createIncendioWithReporte(payload);
+
+      // Si hay foto seleccionada, comprimirla y subirla
+      if (reporte_uuid && pickedImage?.uri) {
+        try {
+          // Comprimir/redimensionar (máx 1600px de ancho, JPEG 0.8)
+          const manipulated = await ImageManipulator.manipulateAsync(
+            pickedImage.uri,
+            [{ resize: { width: 1600 } }],
+            { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+          );
+
+          setUploadPct(0);
+          await uploadReporteFoto(
+            String(reporte_uuid),
+            {
+              uri: manipulated.uri,
+              name: pickedImage.fileName || `foto_${Date.now()}.jpg`,
+              type: 'image/jpeg',
+            },
+            undefined, // crédito opcional: pásalo aquí si lo agregas al form
+            (pct) => setUploadPct(pct)
+          );
+        } catch (e) {
+          console.error('[CREAR] subida de foto falló', e);
+          Alert.alert('Aviso', 'Incendio creado, pero la foto no se pudo subir.');
+        }
+      }
+
       Alert.alert('Listo', 'Incendio creado con reporte');
       router.replace('/mapa');
     } catch (e: any) {
       reportError(e, 'No se pudo guardar');
     } finally {
       setLoading(false);
+      setUploadPct(0);
     }
   };
 
@@ -317,7 +383,7 @@ export default function CrearIncendioConReporte() {
                   multiline
                 />
 
-                {/* Ubicación (centroide & ubicación del reporte) */}
+                {/* Ubicación */}
                 <TextInput
                   label="Ubicación"
                   value={
@@ -450,6 +516,28 @@ export default function CrearIncendioConReporte() {
                   onBlur={handleBlur('finca')}
                   style={styles.input}
                 />
+
+                {/* Foto opcional */}
+                <Text style={styles.section}>Foto del reporte (opcional)</Text>
+                {pickedImage?.uri ? (
+                  <View style={{ marginBottom: 8 }}>
+                    <Image
+                      source={{ uri: pickedImage.uri }}
+                      style={{ width: '100%', height: 180, borderRadius: 8, backgroundColor: '#eee' }}
+                      resizeMode="cover"
+                    />
+                    <Button mode="text" onPress={() => setPickedImage(null)} style={{ marginTop: 4 }}>
+                      Quitar foto
+                    </Button>
+                  </View>
+                ) : (
+                  <Button mode="outlined" icon="image-plus" onPress={pickImage} style={{ marginBottom: 8 }}>
+                    Elegir imagen
+                  </Button>
+                )}
+                {uploadPct > 0 && uploadPct < 1 ? (
+                  <Text>Subiendo foto… {Math.round(uploadPct * 100)}%</Text>
+                ) : null}
 
                 {/* Acciones */}
                 <View style={styles.actions}>

@@ -2,15 +2,15 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   View, StyleSheet, TouchableOpacity, TouchableWithoutFeedback,
-  Animated, Easing, Modal, FlatList, Platform, Image, Linking, Share, ScrollView
+  Animated, Easing, Modal, FlatList, Platform, Image, Linking, Share, ScrollView, Dimensions
 } from 'react-native';
 import MapView, {
   PROVIDER_GOOGLE,
   Region,
   MapType,
   Marker,
-  Callout,
   Heatmap,
+  type LatLng
 } from 'react-native-maps';
 import * as Clipboard from 'expo-clipboard';
 import NetInfo from '@react-native-community/netinfo';
@@ -35,8 +35,7 @@ import { useMapRegion } from '../hooks/useMapRegion';
 import { getLatLngFromIncendio, probabilityFromConfidence, probabilityLabel } from '@/app/utils/map';
 import { isAdminUser } from './utils/roles';
 
-import { cierreColor, inferirEstadoCierre } from '@/app/utils/cierre';
-import { getCierre } from '@/services/cierre';
+import { cierreColor } from '@/app/utils/cierre';
 
 const AS_HEATMAP = 'heatmap';
 
@@ -54,6 +53,14 @@ const GT_BBOX = [
 
 type Etiqueta = { id: string | number; nombre: string };
 
+const screen = Dimensions.get('window');
+const getCoverUrl = (it: any): string | null =>
+  it?.portadaUrl ||
+  it?.foto_portada_url ||
+  it?.thumbnailUrl ||
+  it?.fotos?.[0]?.url ||
+  null;
+
 export default function Mapa() {
   const insets = useSafeAreaInsets();
 
@@ -61,6 +68,12 @@ export default function Mapa() {
   const [viewer, setViewer] = useState<{ visible: boolean; urls: string[]; index: number } | null>(null);
   const [offline, setOffline] = useState(false);
   const [heatmapEnabled, setHeatmapEnabled] = useState<boolean>(true);
+  const [trackViews, setTrackViews] = useState(true);
+  useEffect(() => {
+    const t = setTimeout(() => setTrackViews(false), 800); // luego vuelve a false para rendimiento
+    return () => clearTimeout(t);
+  }, []);
+
 
   const drawerAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
   const leyendaAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
@@ -70,7 +83,7 @@ export default function Mapa() {
   const [menuOpen, setMenuOpen] = useState(false);
 
   const {
-    mapRef, mapReadyRef, currentRegion, span,
+    mapRef, currentRegion, span,
     onRegionChangeComplete, setMapReady, centerOnUser, fitToCoordinates
   } = useMapRegion(DEFAULT_REGION);
 
@@ -102,23 +115,12 @@ export default function Mapa() {
     geo: firmsGeo,
   } = useFirmsGT();
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const v = await AsyncStorage.getItem(AS_HEATMAP);
-        if (v === '0') setHeatmapEnabled(false);
-        if (v === '1') setHeatmapEnabled(true);
-      } catch {}
-    })();
-  }, []);
-  useEffect(() => {
-    AsyncStorage.setItem(AS_HEATMAP, heatmapEnabled ? '1' : '0').catch(() => {});
-  }, [heatmapEnabled]);
-
-  useEffect(() => {
-    (async () => { try { setCurrentUser(await getUser()); } catch {} })();
-  }, []);
-
+  // ====== init ======
+  useEffect(() => { (async () => {
+    try { const v = await AsyncStorage.getItem(AS_HEATMAP); if (v === '0') setHeatmapEnabled(false); if (v === '1') setHeatmapEnabled(true); } catch {}
+  })(); }, []);
+  useEffect(() => { AsyncStorage.setItem(AS_HEATMAP, heatmapEnabled ? '1' : '0').catch(() => {}); }, [heatmapEnabled]);
+  useEffect(() => { (async () => { try { setCurrentUser(await getUser()); } catch {} })(); }, []);
   useEffect(() => {
     const sub = NetInfo.addEventListener((state) => {
       const noInternet = !(state.isConnected && state.isInternetReachable);
@@ -127,209 +129,166 @@ export default function Mapa() {
     return () => sub && sub();
   }, []);
 
-  // ======= Snackbar de error amigable + log técnico =======
+  // ====== errores ======
   const [errorMsg, setErrorMsg] = useState<string>('');
 
-  // ======= 🔁 Throttle + retry =======
+  // ====== reload estabilizado + backoff ======
   const lastReloadRef = useRef<number>(0);
   const reloadingRef = useRef<boolean>(false);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryAttemptRef = useRef<number>(0);
+  const BASE_DELAY_MS = 3000, MAX_DELAY_MS = 30000, JITTER_MS = 400;
+  const randJitter = () => (Math.random() < 0.5 ? -1 : 1) * Math.floor(Math.random() * JITTER_MS);
+  const resetRetryBackoff = () => { retryAttemptRef.current = 0; };
 
-  // ---------- Backoff + Retry-After helpers ----------
-  let retryAttemptRef = useRef<number>(0);
-  const BASE_DELAY_MS = 3000;
-  const MAX_DELAY_MS = 30000;
-  const JITTER_MS = 400;
+  const reloadRef = useRef(reload);
+  useEffect(() => { reloadRef.current = reload; }, [reload]);
 
-  const randJitter = () => {
-    const sign = Math.random() < 0.5 ? -1 : 1;
-    return Math.floor(Math.random() * JITTER_MS) * sign;
-  };
-
-  const parseRetryAfterMs = (retryAfter?: string | number | null): number | null => {
-    if (retryAfter == null) return null;
-    if (typeof retryAfter === 'number') {
-      return Number.isFinite(retryAfter) ? Math.max(0, retryAfter * 1000) : null;
-    }
-    const s = String(retryAfter).trim();
-    const sec = Number(s);
-    if (Number.isFinite(sec)) return Math.max(0, sec * 1000);
-    const then = Date.parse(s);
-    if (Number.isFinite(then)) {
-      const ms = then - Date.now();
-      return ms > 0 ? ms : null;
-    }
-    return null;
-  };
-
-  const resetRetryBackoff = () => {
-    retryAttemptRef.current = 0;
-  };
-
-  // 1) safeReload ANTES que scheduleRetry
   const safeReload = useCallback(async () => {
     const now = Date.now();
     if (now - lastReloadRef.current < 2000 || reloadingRef.current) return;
     reloadingRef.current = true;
     try {
-      await reload();
+      await reloadRef.current();
       lastReloadRef.current = Date.now();
-      resetRetryBackoff(); // éxito → reinicia backoff
+      resetRetryBackoff();
     } catch (e: any) {
       console.error('[MAP][safeReload]', e?.response?.status ?? e);
       setErrorMsg('No se pudieron cargar los incendios. Intenta de nuevo.');
     } finally {
       reloadingRef.current = false;
     }
-  }, [reload]);
+  }, []);
 
   const scheduleRetry = useCallback((ms?: number, doRetry?: () => void) => {
     if (retryTimeoutRef.current) return;
-    const attempt = retryAttemptRef.current;
-    const base = ms ?? Math.min(MAX_DELAY_MS, BASE_DELAY_MS * Math.pow(2, attempt));
+    const base = ms ?? Math.min(MAX_DELAY_MS, BASE_DELAY_MS * Math.pow(2, retryAttemptRef.current));
     const wait = Math.max(1000, Math.min(MAX_DELAY_MS, base + randJitter()));
-    retryAttemptRef.current = Math.min(attempt + 1, 6);
-
+    retryAttemptRef.current = Math.min(retryAttemptRef.current + 1, 6);
     retryTimeoutRef.current = setTimeout(async () => {
       retryTimeoutRef.current = null;
-      try {
-        if (typeof doRetry === 'function') await doRetry();
-        else await safeReload();
-      } catch (e) {
-        // no-op
-      }
+      try { if (typeof doRetry === 'function') await doRetry(); else await safeReload(); } catch {}
     }, wait);
   }, [safeReload]);
 
-  useEffect(() => {
-    return () => { if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current); };
-  }, []);
-
-  // 2) reportError con 429, 5xx y conectividad
   const reportError = useCallback((err: unknown, fallback = 'Ocurrió un error inesperado.') => {
     const anyErr: any = err || {};
     const status: number | undefined =
-      anyErr?.response?.status ??
-      anyErr?.status ??
-      (typeof anyErr?.code === 'number' ? anyErr.code : undefined);
-
+      anyErr?.response?.status ?? anyErr?.status ?? (typeof anyErr?.code === 'number' ? anyErr.code : undefined);
     const retryAfterHeader =
       anyErr?.response?.headers?.['retry-after'] ??
       anyErr?.response?.headers?.['Retry-After'] ??
-      anyErr?.headers?.['retry-after'] ??
-      null;
-
-    // Log compacto para Metro
-    const short = {
-      status: status ?? null,
-      url: anyErr?.config?.url ?? anyErr?.request?.url ?? null,
-      method: anyErr?.config?.method ?? null,
-      code: anyErr?.code ?? null,
-      retryAfter: retryAfterHeader ?? null,
-    };
-    console.debug('[MAP][ERROR]', short);
-    if (status !== 429) {
-      console.debug('[MAP][ERROR][raw]', anyErr?.response?.data || anyErr?.message || anyErr);
-    }
+      anyErr?.headers?.['retry-after'] ?? null;
 
     let msg =
       anyErr?.response?.data?.message ||
       anyErr?.response?.data?.error ||
       anyErr?.response?.data?.detail ||
-      anyErr?.message ||
-      fallback;
+      anyErr?.message || fallback;
 
     if (status === 429) {
-      const retryAfterMs = parseRetryAfterMs(retryAfterHeader);
-      const seconds = retryAfterMs ? Math.ceil(retryAfterMs / 1000) : undefined;
-      console.warn('[MAP][RATE_LIMIT]', { retryAfter: retryAfterHeader, retryAfterMs, attempt: retryAttemptRef.current, url: short.url });
-      msg = seconds
-        ? `Demasiadas solicitudes. Inténtalo de nuevo en ${seconds} s.`
-        : 'Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.';
-      scheduleRetry(retryAfterMs ?? undefined, () => safeReload());
-    } else if (status === 503) {
-      msg = 'Servicio temporalmente no disponible. Inténtalo más tarde.';
-    } else if (status === 502) {
-      msg = 'Hubo un problema con el servidor. Reintenta en breve.';
-    } else if (anyErr?.request && !anyErr?.response) {
-      msg = 'Sin respuesta del servidor. Verifica tu conexión.';
-    } else if (status === 401 || status === 403) {
-      msg = 'No autorizado. Inicia sesión o verifica tus permisos.';
-    } else if (status && status >= 500) {
-      msg = 'Error del servidor. Inténtalo en unos minutos.';
-    }
+      const s = String(retryAfterHeader ?? '').trim();
+      const sec = Number(s);
+      const ms = Number.isFinite(sec) ? Math.max(0, sec * 1000) : null;
+      msg = ms ? `Demasiadas solicitudes. Inténtalo de nuevo en ${Math.ceil(ms/1000)} s.` : 'Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.';
+      scheduleRetry(ms ?? undefined, () => safeReload());
+    } else if (status === 503) msg = 'Servicio temporalmente no disponible. Inténtalo más tarde.';
+    else if (status === 502) msg = 'Hubo un problema con el servidor. Reintenta en breve.';
+    else if (anyErr?.request && !anyErr?.response) msg = 'Sin respuesta del servidor. Verifica tu conexión.';
+    else if (status === 401 || status === 403) msg = 'No autorizado. Inicia sesión o verifica tus permisos.';
+    else if (status && status >= 500) msg = 'Error del servidor. Inténtalo en unos minutos.';
 
     setErrorMsg(String(msg));
     return msg;
   }, [scheduleRetry, safeReload]);
 
-  // ===== Cargar/recargar incendios =====
-  useEffect(() => { safeReload(); }, [safeReload]);
   useFocusEffect(useCallback(() => { safeReload(); }, [safeReload]));
 
+  // ====== logs coords inválidas ======
   useEffect(() => {
     if (!items?.length) return;
     let invalid = 0;
-    for (const it of items) {
-      const pos = getLatLngFromIncendio(it as any);
-      if (!pos) invalid++;
-    }
-    if (invalid) {
-      console.log(`[MAP] Incendios sin coord válidas: ${invalid}/${items.length}`);
-    }
+    for (const it of items) if (!getLatLngFromIncendio(it as any)) invalid++;
+    if (invalid) console.log(`[MAP] Incendios sin coord válidas: ${invalid}/${items.length}`);
   }, [items]);
 
+  // ====== Cache + estado para meta ======
   const [cierreEstados, setCierreEstados] = useState<Record<string, string>>({});
   const [reportantes, setReportantes] = useState<Record<string, string>>({});
+  const metaCacheRef = useRef<{ estados: Record<string,string>, reportantes: Record<string,string> }>({
+    estados: {}, reportantes: {},
+  });
+  const abortersRef = useRef<Map<string, AbortController>>(new Map());
+  const inFlightRepRef = useRef<Map<string, Promise<void>>>(new Map());
 
-  const loadCierreYReportante = useCallback(async (arr: any[]) => {
-    const ids = Array.from(new Set(arr.map((it) => String(it?.id ?? it?.incendio_uuid)))).filter(Boolean);
-    if (!ids.length) return;
-
-    const estAcc: Record<string, string> = {};
-    const repAcc: Record<string, string> = {};
-
-    await Promise.all(
-      ids.map(async (id) => {
-        try {
-          const c = await getCierre(id);
-          const estado = c?.estado_cierre || inferirEstadoCierre(c?.secuencia_control || undefined);
-          estAcc[id] = estado;
-
-          try {
-            const { data: rep } = await api.get(`/reportes?incendio_uuid=${id}&pageSize=1`);
-            const first = (rep?.items || [])[0] || null;
-            const name =
-              first?.reportado_por_nombre ||
-              [first?.reportado_por?.nombre, first?.reportado_por?.apellido].filter(Boolean).join(' ') ||
-              '';
-            if (name) repAcc[id] = name;
-          } catch {
-            const it = arr.find((x) => String(x?.id ?? x?.incendio_uuid) === id);
-            const u = it?.creado_por || it?.creadoPor || null;
-            const by = [u?.nombre, u?.apellido].filter(Boolean).join(' ') || u?.email || '';
-            if (by) repAcc[id] = by;
-          }
-        } catch (e: any) {
-          estAcc[id] = estAcc[id] || 'Pendiente';
-          const it = arr.find((x) => String(x?.id ?? x?.incendio_uuid) === id);
-          const u = it?.creado_por || it?.creadoPor || null;
-          const by = [u?.nombre, u?.apellido].filter(Boolean).join(' ') || u?.email || '';
-          if (by) repAcc[id] = by;
-          console.warn('[MAP][getCierre] fallo para id', id, e?.response?.status ?? e);
-        }
-      })
-    );
-
-    setCierreEstados((prev) => ({ ...prev, ...estAcc }));
-    setReportantes((prev) => ({ ...prev, ...repAcc }));
+  // ---- 1) Batch: estados de TODOS los markers ----
+  const fetchEstadosBatch = useCallback(async (arr: any[]) => {
+    const ids = Array.from(new Set(arr.map(it => String(it?.id ?? it?.incendio_uuid)).filter(Boolean)));
+    const pendientes = ids.filter(id => !(id in metaCacheRef.current.estados));
+    if (!pendientes.length) {
+      setCierreEstados(prev => ({ ...prev, ...metaCacheRef.current.estados }));
+      return;
+    }
+    try {
+      const { data } = await api.get('/cierre/estados', { params: { ids: pendientes.join(',') } });
+      const estados: Record<string,string> = {};
+      for (const id of pendientes) {
+        const entry = data?.byId?.[id];
+        estados[id] = entry?.estado || 'Pendiente';
+      }
+      metaCacheRef.current.estados = { ...metaCacheRef.current.estados, ...estados };
+      setCierreEstados(prev => ({ ...prev, ...estados }));
+    } catch (e) {
+      console.warn('[MAP][fetchEstadosBatch] fallo', e);
+      const estados: Record<string,string> = {};
+      for (const id of pendientes) estados[id] = 'Pendiente';
+      metaCacheRef.current.estados = { ...metaCacheRef.current.estados, ...estados };
+      setCierreEstados(prev => ({ ...prev, ...estados }));
+    }
   }, []);
+  useEffect(() => { if (items?.length) fetchEstadosBatch(items as any[]); }, [items, fetchEstadosBatch]);
 
-  useEffect(() => {
-    if (!items?.length) return;
-    loadCierreYReportante(items as any[]);
-  }, [items, loadCierreYReportante]);
+  // ---- 2) Lazy: reportante (await antes de mostrar preview) ----
+  const ensureReportante = useCallback(async (id: string, item: any) => {
+    if (!id || metaCacheRef.current.reportantes[id]) return;
+    const existing = inFlightRepRef.current.get(id);
+    if (existing) { await existing; return; }
 
+    const ctrl = new AbortController();
+    abortersRef.current.set(id, ctrl);
+    const p = (async () => {
+      try {
+        const { data: rep } = await api.get(`/reportes`, {
+          params: { incendio_uuid: id, pageSize: 1 },
+          signal: ctrl.signal
+        });
+        const first = (rep?.items || [])[0] || null;
+        const name =
+          first?.reportado_por_nombre ||
+          [first?.reportado_por?.nombre, first?.reportado_por?.apellido].filter(Boolean).join(' ') ||
+          '';
+        if (name) {
+          metaCacheRef.current.reportantes[id] = name;
+          setReportantes(prev => ({ ...prev, [id]: name }));
+          return;
+        }
+      } catch {}
+      const u = item?.creado_por || item?.creadoPor || null;
+      const by = [u?.nombre, u?.apellido].filter(Boolean).join(' ') || u?.email || '';
+      if (by) {
+        metaCacheRef.current.reportantes[id] = by;
+        setReportantes(prev => ({ ...prev, [id]: by }));
+      }
+    })();
+    inFlightRepRef.current.set(id, p);
+    try { await p; } finally {
+      inFlightRepRef.current.delete(id);
+      abortersRef.current.delete(id);
+    }
+  }, []);
+  useEffect(() => () => { abortersRef.current.forEach(c => c.abort()); abortersRef.current.clear(); }, []);
+
+  // ====== autofit inicial ======
   const firstAutoFitDoneRef = useRef(false);
   useEffect(() => {
     if (!mapRef.current || !items.length || firstAutoFitDoneRef.current) return;
@@ -340,29 +299,14 @@ export default function Mapa() {
     }
   }, [items, mapRef, fitToCoordinates, insets.top, insets.bottom]);
 
-  const openDrawer = () => {
-    setDrawerOpen(true);
-    Animated.timing(drawerAnim, { toValue: 0, duration: 300, easing: Easing.out(Easing.ease), useNativeDriver: false }).start();
-  };
-  const closeDrawer = () => {
-    Animated.timing(drawerAnim, { toValue: -DRAWER_WIDTH, duration: 300, easing: Easing.in(Easing.ease), useNativeDriver: false }).start(() => setDrawerOpen(false));
-  };
-  const openLeyenda = () => {
-    setLeyendaOpen(true);
-    Animated.timing(leyendaAnim, { toValue: 0, duration: 300, easing: Easing.out(Easing.ease), useNativeDriver: false }).start();
-  };
-  const closeLeyenda = () => {
-    Animated.timing(leyendaAnim, { toValue: -DRAWER_WIDTH, duration: 300, easing: Easing.in(Easing.ease), useNativeDriver: false }).start(() => setLeyendaOpen(false));
-  };
-  const openMenu = () => {
-    setMenuOpen(true);
-    Animated.timing(menuAnim, { toValue: 0, duration: 300, easing: Easing.out(Easing.ease), useNativeDriver: false }).start();
-  };
-  const closeMenu = () => {
-    Animated.timing(menuAnim, { toValue: -DRAWER_WIDTH, duration: 300, easing: Easing.in(Easing.ease), useNativeDriver: false }).start(() => setMenuOpen(false));
-  };
+  // ====== UI helpers ======
+  const openDrawer = () => { setDrawerOpen(true); Animated.timing(drawerAnim, { toValue: 0, duration: 300, easing: Easing.out(Easing.ease), useNativeDriver: false }).start(); };
+  const closeDrawer = () => { Animated.timing(drawerAnim, { toValue: -DRAWER_WIDTH, duration: 300, easing: Easing.in(Easing.ease), useNativeDriver: false }).start(() => setDrawerOpen(false)); };
+  const openLeyenda = () => { setLeyendaOpen(true); Animated.timing(leyendaAnim, { toValue: 0, duration: 300, easing: Easing.out(Easing.ease), useNativeDriver: false }).start(); };
+  const closeLeyenda = () => { Animated.timing(leyendaAnim, { toValue: -DRAWER_WIDTH, duration: 300, easing: Easing.in(Easing.ease), useNativeDriver: false }).start(() => setLeyendaOpen(false)); };
+  const openMenu = () => { setMenuOpen(true); Animated.timing(menuAnim, { toValue: 0, duration: 300, easing: Easing.out(Easing.ease), useNativeDriver: false }).start(); };
+  const closeMenu = () => { Animated.timing(menuAnim, { toValue: -DRAWER_WIDTH, duration: 300, easing: Easing.in(Easing.ease), useNativeDriver: false }).start(() => setMenuOpen(false)); };
 
-  // Navegación del menú lateral
   const handleMenuNavigate = (route: string) => {
     if (route === 'Mapa' || route === 'Ayuda' || route === 'Logout') { closeMenu(); return; }
     if (route === 'listaIncendios') { closeMenu(); router.push('/incendios/listaIncendios'); return; }
@@ -375,123 +319,86 @@ export default function Mapa() {
   };
 
   const lastTapRef = useRef<number>(0);
-  const debounceTap = (fn: () => void, ms = 180) => {
-    const now = Date.now();
-    if (now - lastTapRef.current < ms) return;
-    lastTapRef.current = now;
-    fn();
-  };
-
+  const debounceTap = (fn: () => void, ms = 180) => { const now = Date.now(); if (now - lastTapRef.current < ms) return; lastTapRef.current = now; fn(); };
   const openInMaps = (lat: number, lng: number, label = 'Incendio') => {
     const g = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}(${encodeURIComponent(label)})`;
     const apple = `http://maps.apple.com/?ll=${lat},${lng}&q=${encodeURIComponent(label)}`;
     Linking.openURL(Platform.OS === 'ios' ? apple : g).catch(() => Linking.openURL(g));
   };
-
   const shareIncendio = async (id: string | number, lat?: number, lng?: number, titulo?: string) => {
     const base = `Incendio${titulo ? `: ${titulo}` : ''}`;
     const link = `https://app-incendios.example/incendios/detalles?id=${id}`;
     const loc = (lat != null && lng != null) ? `\nUbicación: ${lat.toFixed(6)}, ${lng.toFixed(6)}` : '';
     await Share.share({ message: `${base}\n${link}${loc}` });
   };
-
-  const copyCoords = async (lat: number, lng: number) => {
-    await Clipboard.setStringAsync(`${lat.toFixed(6)}, ${lng.toFixed(6)}`);
-  };
+  const copyCoords = async (lat: number, lng: number) => { await Clipboard.setStringAsync(`${lat.toFixed(6)}, ${lng.toFixed(6)}`); };
 
   const showFirmDots = span.latDelta < 0.05 && span.lngDelta < 0.05;
 
+  // ====== Preview manual (sin Callout)
+  const [preview, setPreview] = useState<null | { id: string; item: any; pt: { x: number; y: number } }>(null);
+
+  // ---- Custom marker (círculo con halo, sin pico)
+  const MarkerDot = ({ color }: { color: string }) => (
+    <View style={styles.dotWrap}>
+      <View style={[styles.dotHalo, { backgroundColor: color }]} />
+      <View style={[styles.dotCore, { backgroundColor: color }]} />
+    </View>
+  );
+
+  // ★ Render de markers con custom view y preview manual
   const renderMarkers = () => (
     <>
       {items.map((item) => {
         const coord = getLatLngFromIncendio(item as any);
         if (!coord) return null;
-        const { latitude: lat, longitude: lng } = coord;
 
         const id = String((item as any).id ?? (item as any).incendio_uuid);
-        const estado = cierreEstados[id];
-        const pinColor = cierreColor(estado);
-        const publicadoPor = reportantes[id] ||
-          (() => {
-            const u = (item as any).creado_por || (item as any).creadoPor || null;
-            return [u?.nombre, u?.apellido].filter(Boolean).join(' ') || u?.email || 'Anónimo';
-          })();
+        const estado = cierreEstados[id] || 'Pendiente';
+        const color = cierreColor(estado);
 
-        const cover =
-          (item as any)?.portadaUrl ||
-          (item as any)?.foto_portada_url ||
-          (item as any)?.thumbnailUrl ||
-          (item as any)?.fotos?.[0]?.url ||
-          null;
+      const handleMarkerPress = async () => {
+        const point = await mapRef.current?.pointForCoordinate(coord as LatLng);
+        const pt = point || { x: screen.width / 2, y: screen.height / 2 };
 
-        return (
-          <Marker
-            key={id}
-            coordinate={coord}
-            pinColor={pinColor}
-            tracksViewChanges={false}
-            accessibilityLabel={`Incendio ${(item as any).titulo || 'Sin título'}`}
-          >
-            <Callout
-              onPress={() =>
-                router.push(`/incendios/detalles?id=${id}`)
-              }
-            >
-              <View style={{ maxWidth: 240 }}>
-                <Text style={{ fontWeight: 'bold', fontSize: 15 }}>
-                  {(item as any).titulo || 'Sin título'}
-                </Text>
+        await ensureReportante(id, item);
 
-                <TouchableOpacity
-                  accessibilityRole="imagebutton"
-                  accessibilityLabel="Ver foto a pantalla completa"
-                  activeOpacity={0.85}
-                  onPress={(e) => {
-                    e.stopPropagation();
-                    if (cover) debounceTap(() => setViewer({ visible: true, urls: [cover], index: 0 }));
-                  }}
-                >
-                  <Image
-                    source={cover ? { uri: cover } : require('@/assets/images/placeholder_incendio.png')}
-                    style={{ width: 240, height: 120, borderRadius: 8, marginTop: 6 }}
-                    resizeMode="cover"
-                  />
-                </TouchableOpacity>
+        const cover = getCoverUrl(item as any);
 
-                <Text style={{ marginTop: 6 }} numberOfLines={4}>
-                  {(item as any).descripcion || 'Sin descripción'}
-                </Text>
+        // Si hay foto, abrimos el modal de foto a pantalla completa.
+        if (cover) {
+          debounceTap(() =>
+            setViewer({ visible: true, urls: [cover], index: 0 })
+          );
+          return;
+        }
 
-                <Text style={{ marginTop: 4, color: '#666', fontSize: 12 }}>
-                  {`Publicado por: ${publicadoPor || 'Anónimo'}`}
-                </Text>
+        // Si NO hay foto, mantenemos tu preview card actual.
+        debounceTap(() => setPreview({ id, item, pt }));
+      };
 
-                <Text style={{ color: '#777', fontSize: 12, marginTop: 2 }}>
-                  {`Estado: ${estado || 'Pendiente'}`}
-                </Text>
 
-                <View
-                  style={{
-                    marginTop: 8,
-                    backgroundColor: '#4CAF50',
-                    paddingVertical: 6,
-                    borderRadius: 8,
-                    alignItems: 'center',
-                  }}
-                >
-                  <Text style={{ color: '#fff', fontWeight: 'bold' }}>Ver</Text>
-                </View>
-              </View>
-            </Callout>
-          </Marker>
-        );
+return (
+  <Marker
+    key={id}
+    coordinate={coord}
+    // tracksViewChanges ya no hace falta si no hay hijo
+    // tracksViewChanges={false}
+    pinColor={color}              // ← usa tu color calculado
+    zIndex={9999}                 // ← que quede encima del heatmap
+    onPress={handleMarkerPress}
+    anchor={{ x: 0.5, y: 1 }}     // ← ancla clásico del pin (punta)
+  />
+);
+
+
       })}
     </>
   );
+
   return (
     <View style={styles.container}>
-      <View style={{ position: 'absolute', top: (insets.top || 0) + 8, left: 8, backgroundColor: '#0008', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 8, zIndex: 4 }}>
-      </View>
+      <View style={{ position: 'absolute', top: (insets.top || 0) + 8, left: 8, backgroundColor: '#0000', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 8, zIndex: 4 }} />
 
       <MapView
         ref={mapRef}
@@ -502,39 +409,20 @@ export default function Mapa() {
         showsMyLocationButton={false}
         onRegionChangeComplete={onRegionChangeComplete}
         onMapReady={async () => {
-          try {
-            setMapReady();
-            await centerOnUser();
-          } catch (e) {
-            reportError(e, 'No se pudo centrar el mapa en tu ubicación');
-          }
+          try { setMapReady(); await centerOnUser(); }
+          catch (e) { reportError(e, 'No se pudo centrar el mapa en tu ubicación'); }
         }}
         mapType={mapType}
         mapPadding={{ top: insets.top + 48, right: 0, bottom: insets.bottom, left: 0 }}
       >
-        {heatmapEnabled && heatData.length > 0 && (
-          <Heatmap
-            points={heatData}
-            radius={42}
-            opacity={0.75}
-            gradient={{
-              colors: ['#00BCD4', '#4CAF50', '#FFEB3B', '#FF9800', '#F44336'],
-              startPoints: [0.1, 0.3, 0.5, 0.7, 0.9],
-              colorMapSize: 256,
-            }}
-          />
-        )}
+
 
         {firmsEnabled && firmsHeat.length > 0 && (
           <Heatmap
             points={firmsHeat}
-            radius={36}
+            radius={25}
             opacity={0.6}
-            gradient={{
-              colors: ['#2196F3', '#03A9F4', '#8BC34A', '#FFC107', '#F44336'],
-              startPoints: [0.1, 0.3, 0.5, 0.7, 0.9],
-              colorMapSize: 256,
-            }}
+            gradient={{ colors: ['#2196F3', '#03A9F4', '#8BC34A', '#FFC107', '#F44336'], startPoints: [0.1, 0.3, 0.5, 0.7, 0.9], colorMapSize: 256 }}
           />
         )}
 
@@ -546,36 +434,9 @@ export default function Mapa() {
           const when = f.properties?.acqTime || '';
           const id = f.id || `${lat},${lon},${when}`;
 
-        return (
-            <Marker
-              key={id}
-              coordinate={{ latitude: lat, longitude: lon }}
-              pinColor="#FF5722"
-              tracksViewChanges={false}
-            >
-              <Callout>
-                <View style={{ maxWidth: 240 }}>
-                  <Text style={{ fontWeight: 'bold' }}>Detección satelital (FIRMS)</Text>
-                  <Text>Fuente: {String(f.properties?.source || 'N/D')}</Text>
-                  <Text>Confianza: {conf}%</Text>
-                  <Text>Probabilidad de incendio: {probTxt}</Text>
-                  {when ? <Text>Fecha/hora: {String(when)}</Text> : null}
-                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
-                    <TouchableOpacity
-                      onPress={() => openInMaps(lat, lon, 'FIRMS')}
-                      style={{ backgroundColor: '#EEE', paddingVertical: 6, paddingHorizontal: 8, borderRadius: 8 }}
-                    >
-                      <Text style={{ fontWeight: '600' }}>Abrir mapas</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      onPress={() => copyCoords(lat, lon)}
-                      style={{ backgroundColor: '#EEE', paddingVertical: 6, paddingHorizontal: 8, borderRadius: 8 }}
-                    >
-                      <Text style={{ fontWeight: '600' }}>Copiar</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </Callout>
+          return (
+            <Marker key={id} coordinate={{ latitude: lat, longitude: lon }} anchor={{ x: 0.5, y: 1 }}>
+              <View style={styles.firmsDot}/>
             </Marker>
           );
         })}
@@ -592,24 +453,98 @@ export default function Mapa() {
         </View>
       )}
 
+      {/* ===== Preview card + overlay (overlay detrás) ===== */}
+      {preview && (() => {
+        const { id, item, pt } = preview;
+        const estado = cierreEstados[id] || 'Pendiente';
+        const publicadoPor =
+          reportantes[id] ||
+          (() => {
+            const u = (item as any).creado_por || (item as any).creadoPor || null;
+            return [u?.nombre, u?.apellido].filter(Boolean).join(' ') || u?.email || 'Anónimo';
+          })();
+        const cover =
+          (item as any)?.portadaUrl ||
+          (item as any)?.foto_portada_url ||
+          (item as any)?.thumbnailUrl ||
+          (item as any)?.fotos?.[0]?.url ||
+          null;
+
+        const CARD_W = 260, CARD_H = 210;
+        const left = Math.max(8, Math.min(pt.x - CARD_W / 2, screen.width - CARD_W - 8));
+        const top = Math.max((insets.top || 0) + 90, pt.y - CARD_H - 16);
+
+        const coord = getLatLngFromIncendio(item as any);
+
+        return (
+          <>
+            {/* Fondo gris detrás del modal */}
+            <TouchableWithoutFeedback onPress={() => setPreview(null)}>
+              <View style={styles.previewOverlayBehind} />
+            </TouchableWithoutFeedback>
+
+            {/* Tarjeta por encima */}
+            <View
+              style={[styles.previewCard, {
+                left, top, width: CARD_W,
+              }]}
+              collapsable={false}
+              renderToHardwareTextureAndroid
+              needsOffscreenAlphaCompositing
+            >
+              <Text style={{ fontWeight: 'bold', fontSize: 15 }}>
+                {(item as any).titulo || 'Sin título'}
+              </Text>
+
+              <TouchableOpacity
+                accessibilityRole="imagebutton"
+                accessibilityLabel="Ver foto a pantalla completa"
+                activeOpacity={0.85}
+                onPress={() => { if (cover) setViewer({ visible: true, urls: [cover], index: 0 }); }}
+                style={{ marginTop: 6 }}
+              >
+                <Image
+                  source={cover ? { uri: cover } : require('@/assets/images/placeholder_incendio.png')}
+                  style={{ width: '100%', height: 110, borderRadius: 8 }}
+                  resizeMode="cover"
+                />
+              </TouchableOpacity>
+
+              <Text style={{ marginTop: 6 }} numberOfLines={2}>
+                {(item as any).descripcion || 'Sin descripción'}
+              </Text>
+
+              <Text style={{ marginTop: 4, color: '#666', fontSize: 12 }}>
+                {`Publicado por: ${publicadoPor || (reportantes[id] ? '' : '…')}`}
+              </Text>
+              <Text style={{ color: '#777', fontSize: 12, marginTop: 2 }}>
+                {`Estado: ${estado}`}
+              </Text>
+
+              <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                        <TouchableOpacity
+                  onPress={() => router.push(`/incendios/detalles?id=${id}`)}
+                  style={[styles.cardBtn, { backgroundColor: '#E8F5E9' }]}
+                >
+                  <Text style={{ fontWeight: '600', color: '#2E7D32' }}>Detalles</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </>
+        );
+      })()}
+
       <OfflineBanner visible={offline} onRetry={() => safeReload()} />
 
       {(drawerOpen || leyendaOpen || menuOpen) && (
-        <TouchableWithoutFeedback
-          onPress={() => { if (drawerOpen) closeDrawer(); if (leyendaOpen) closeLeyenda(); if (menuOpen) closeMenu(); }}
-        >
+        <TouchableWithoutFeedback onPress={() => { if (drawerOpen) closeDrawer(); if (leyendaOpen) closeLeyenda(); if (menuOpen) closeMenu(); }}>
           <View style={styles.overlay} />
         </TouchableWithoutFeedback>
       )}
 
       <MapTypeDrawer animation={drawerAnim} onSelectType={(type) => { setMapType(type); closeDrawer(); }} />
       <LeyendaDrawer animation={leyendaAnim} />
-      <MenuDrawer
-        animation={menuAnim}
-        onClose={closeMenu}
-        onNavigate={handleMenuNavigate}
-        isAdmin={isAdmin}
-      />
+      <MenuDrawer animation={menuAnim} onClose={closeMenu} onNavigate={handleMenuNavigate} isAdmin={isAdmin} />
 
       <View style={[styles.header, { paddingTop: insets.top + 12, paddingBottom: 15 }]}>
         <TouchableOpacity onPress={openMenu} accessibilityRole="button" accessibilityLabel="Abrir menú">
@@ -626,10 +561,7 @@ export default function Mapa() {
         <TouchableOpacity
           onPress={() => {
             const r = currentRegion;
-            router.push({
-              pathname: '/incendios/crear',
-              params: { lat: String(r.latitude), lng: String(r.longitude) },
-            });
+            router.push({ pathname: '/incendios/crear', params: { lat: String(r.latitude), lng: String(r.longitude) } });
           }}
           accessibilityRole="button"
           accessibilityLabel="Crear nuevo reporte"
@@ -643,56 +575,20 @@ export default function Mapa() {
         <CustomButton icon="location" label="Cerca" onPress={centerOnUser} />
         <CustomButton icon="book" label="Leyenda" onPress={openLeyenda} />
         <CustomButton icon="refresh" label={loading ? '...' : 'Recargar'} onPress={() => safeReload()} />
-        <CustomButton
-          icon="map"
-          label="GT"
-          onPress={() => fitToCoordinates(GT_BBOX as any, { top: 80, right: 80, bottom: 80, left: 80 })}
-        />
+        <CustomButton icon="map" label="GT" onPress={() => fitToCoordinates(GT_BBOX as any, { top: 80, right: 80, bottom: 80, left: 80 })} />
       </View>
 
       <View pointerEvents="box-none" style={[styles.topChipsWrap, { top: (insets.top || 0) + 70 }]}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.topChipsBar}>
-          <Chip
-            selected={heatmapEnabled}
-            onPress={() => setHeatmapEnabled(v => !v)}
-            style={styles.chip}
-            icon={heatmapEnabled ? 'fire' : 'fire-off'}
-            accessibilityRole="button"
-            accessibilityLabel="Alternar heatmap incendios"
-          >
-            {heatmapEnabled ? 'Incendios: ON' : 'Incendios: OFF'}
-          </Chip>
 
-          <Chip
-            selected={firmsEnabled}
-            onPress={() => setFirmsEnabled(v => !v)}
-            style={styles.chip}
-            icon={firmsEnabled ? 'satellite-uplink' : 'satellite-variant'}
-            accessibilityRole="button"
-            accessibilityLabel="Alternar FIRMS"
-          >
+          <Chip selected={firmsEnabled} onPress={() => setFirmsEnabled(v => !v)} style={styles.chip} icon={firmsEnabled ? 'satellite-uplink' : 'satellite-variant'} accessibilityRole="button" accessibilityLabel="Alternar FIRMS">
             {firmsEnabled ? `FIRMS: ${daysWindow}d` : 'FIRMS: OFF'}
           </Chip>
 
-          <Chip
-            style={styles.chip}
-            icon="calendar"
-            onPress={() => setDaysWindow(prev => (prev === 1 ? 3 : prev === 3 ? 7 : 1))}
-            accessibilityRole="button"
-            accessibilityLabel="Cambiar ventana de días FIRMS"
-          >
+          <Chip style={styles.chip} icon="calendar" onPress={() => setDaysWindow(prev => (prev === 1 ? 3 : prev === 3 ? 7 : 1))} accessibilityRole="button" accessibilityLabel="Cambiar ventana de días FIRMS">
             {`${daysWindow} días`}
           </Chip>
 
-          <Chip
-            style={styles.chip}
-            icon="tag"
-            onPress={() => setFiltersOpen(true)}
-            accessibilityRole="button"
-            accessibilityLabel="Abrir filtros de etiquetas"
-          >
-            {selectedEtiquetaIds.length ? `Etiquetas: ${selectedEtiquetaIds.length}` : 'Etiquetas'}
-          </Chip>
         </ScrollView>
       </View>
 
@@ -717,8 +613,11 @@ export default function Mapa() {
                   onPress={() => {
                     setSelectedEtiquetaIds(prev => {
                       const set = new Set(prev);
-                      // eslint-disable-next-line no-unused-expressions
-                      checked ? set.delete(Number(item.id)) : set.add(Number(item.id));
+                      if (checked) {
+                        set.delete(Number(item.id));
+                      } else {
+                        set.add(Number(item.id));
+                      }
                       return Array.from(set);
                     });
                   }}
@@ -751,42 +650,24 @@ export default function Mapa() {
             onAction={() => {
               if (isAdmin) {
                 const r = currentRegion;
-                router.push({
-                  pathname: '/incendios/crear',
-                  params: { lat: String(r.latitude), lng: String(r.longitude) },
-                });
+                router.push({ pathname: '/incendios/crear', params: { lat: String(r.latitude), lng: String(r.longitude) } });
               }
             }}
           />
         </View>
       )}
 
-      <Snackbar
-        visible={!!errorMsg}
-        onDismiss={() => setErrorMsg('')}
-        duration={3500}
-        action={{ label: 'OK', onPress: () => setErrorMsg('') }}
-      >
+      <Snackbar visible={!!errorMsg} onDismiss={() => setErrorMsg('')} duration={3500} action={{ label: 'OK', onPress: () => setErrorMsg('') }}>
         {errorMsg}
       </Snackbar>
 
-      <ImageViewerModal
-        visible={!!viewer}
-        urls={viewer?.urls || []}
-        index={viewer?.index ?? 0}
-        onClose={() => setViewer(null)}
-      />
+      <ImageViewerModal visible={!!viewer} urls={viewer?.urls || []} index={viewer?.index ?? 0} onClose={() => setViewer(null)} />
     </View>
   );
 }
 
 const CustomButton = ({ icon, label, onPress }: { icon: string; label?: string; onPress: () => void }) => (
-  <TouchableOpacity
-    style={styles.customButton}
-    onPress={onPress}
-    accessibilityRole="button"
-    accessibilityLabel={label || icon}
-  >
+  <TouchableOpacity style={styles.customButton} onPress={onPress} accessibilityRole="button" accessibilityLabel={label || icon}>
     <Ionicons name={icon as any} size={24} color="white" />
     {label && <Text style={styles.buttonLabel}>{label}</Text>}
   </TouchableOpacity>
@@ -823,4 +704,57 @@ const styles = StyleSheet.create({
   sheetTitle: { fontWeight: 'bold', fontSize: 16, marginBottom: 8, textAlign: 'center' },
   sheetRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, gap: 8 },
   sheetActions: { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
+
+  // ==== Custom markers (halo redondo)
+  dotWrap: { alignItems: 'center', justifyContent: 'center' },
+dotHalo: {
+  position: 'absolute',
+  width: 26,
+  height: 26,
+  borderRadius: 13,
+  opacity: 0.25,
+  borderWidth: 1,            // <— añade esto
+  borderColor: '#00000022',  // <— sombra leve del halo
+},
+
+  dotCore: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: '#fff',
+    ...Platform.select({
+      ios: { shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 2, shadowOffset: { width: 0, height: 1 } },
+      android: { elevation: 3 },
+    }),
+  },
+
+  firmsDot: {
+    width: 10, height: 10, borderRadius: 5, backgroundColor: '#FF5722',
+    borderWidth: 1, borderColor: '#fff',
+  },
+
+  previewOverlayBehind: {
+    position: 'absolute',
+    top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.25)',
+    zIndex: 5,
+  },
+  previewCard: {
+    position: 'absolute',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 8,
+    elevation: 10,
+    zIndex: 6,
+    shadowColor: '#000', shadowOpacity: 0.22, shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+  },
+
+  cardBtn: {
+    backgroundColor: '#EEE',
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+  },
 });

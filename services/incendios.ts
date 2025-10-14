@@ -288,6 +288,21 @@ function fromBackendIncendio(raw: any): Incendio {
     thumbnailUrl,
   };
 
+  // ⬇️ Inyectar foto suelta si el backend la incluyó (de /with-reporte multipart)
+  if (raw?.foto?.url) {
+    try {
+      const fotosArr = Array.isArray(base.fotos) ? base.fotos : [];
+      fotosArr.push({
+        id: raw.foto.foto_reporte_uuid ?? raw.foto.id ?? 'foto-0',
+        url: raw.foto.url,
+        orden: 0,
+      });
+      base.fotos = fotosArr;
+      if (!base.portadaUrl) base.portadaUrl = raw.foto.url;
+    } catch {}
+  }
+  // ⬆️ Fin inyección de foto
+
   return normalizeIncendioCoords(base);
 }
 
@@ -407,7 +422,7 @@ export async function deleteIncendio(id: string) {
   return data;
 }
 
-/** ---------- Crear incendio + reporte (nuevo endpoint) ---------- */
+/** ---------- Crear incendio + reporte (JSON anidado, legacy/compat) ---------- */
 
 export type CreateWithReportePayload = {
   titulo: string;
@@ -429,8 +444,9 @@ export type CreateWithReportePayload = {
 };
 
 /**
- * Intenta POST /incendios/with-reporte2 (body anidado)
- * si no existe, intenta /incendios/with-reporte.
+ * Intenta POST /incendios/with-reporte (body anidado JSON)
+ * si no existe, intenta /incendios/with-reporte2.
+ * (Se mantiene por compatibilidad cuando no hay archivo).
  */
 export async function createIncendioWithReporte(payload: CreateWithReportePayload) {
   const body = {
@@ -438,11 +454,10 @@ export async function createIncendioWithReporte(payload: CreateWithReportePayloa
       titulo: payload.titulo,
       descripcion: payload.descripcion ?? null,
       centroide: payload.centroide ?? null,
-      estado_incendio_uuid: payload.estado_incendio_uuid, // el server lo acepta opcional
+      estado_incendio_uuid: payload.estado_incendio_uuid,
     },
     reporte: {
       medio_uuid: payload.reporte.medio_uuid,
-      // si no mandan ubicacion del reporte, usamos el centroide del incendio
       ubicacion: payload.reporte.ubicacion ?? payload.centroide ?? null,
       reportado_en: payload.reporte.reportado_en ?? new Date().toISOString(),
       observaciones: payload.reporte.observaciones ?? null,
@@ -451,23 +466,139 @@ export async function createIncendioWithReporte(payload: CreateWithReportePayloa
       municipio_uuid: payload.reporte.municipio_uuid ?? null,
       lugar_poblado: payload.reporte.lugar_poblado ?? null,
       finca: payload.reporte.finca ?? null,
-      // NO enviar institucion_uuid: la resuelve el backend con el usuario del token
     },
   };
 
   try {
-    // ruta principal que implementaste
     const { data } = await api.post('/incendios/with-reporte', body);
-    return fromBackendIncendio(data);
+    return {
+      incendio: fromBackendIncendio(data),
+      // pasa el uuid crudo que manda el backend
+      reporte_uuid:
+        data?.reporte_uuid ||
+        data?.reporte?.reporte_uuid ||
+        (Array.isArray(data?.reportes) ? data.reportes[0]?.reporte_uuid : null) ||
+        null,
+      raw: data, // útil si luego quieres inspeccionar más campos
+    };
   } catch (e: any) {
-    // fallback por si en algún entorno quedó versionado como /with-reporte2
     if (e?.response?.status === 404) {
       const { data } = await api.post('/incendios/with-reporte2', body);
-      return fromBackendIncendio(data);
+      return {
+        incendio: fromBackendIncendio(data),
+        reporte_uuid:
+          data?.reporte_uuid ||
+          data?.reporte?.reporte_uuid ||
+          (Array.isArray(data?.reportes) ? data.reportes[0]?.reporte_uuid : null) ||
+          null,
+        raw: data,
+      };
     }
     throw e;
   }
 }
+
+/** ---------- Crear incendio + reporte (multipart con file y foto en respuesta) ---------- */
+
+export type CreateWithReporteFormParams = {
+  incendio: {
+    titulo: string;
+    descripcion?: string | null;
+    centroide: { type: 'Point'; coordinates: [number, number] };
+    estado_incendio_uuid?: string;
+  };
+  reporte: {
+    medio_uuid: string;
+    ubicacion?: { type: 'Point'; coordinates: [number, number] };
+    reportado_en?: string;
+    observaciones?: string | null;
+    telefono?: string | null;
+    departamento_uuid?: string | null;
+    municipio_uuid?: string | null;
+    lugar_poblado?: string | null;
+    finca?: string | null;
+    credito?: string | null;
+  };
+  file?: { uri: string; name: string; type: string };
+};
+
+/**
+ * POST /incendios/with-reporte (multipart: incendio, reporte (JSON) + file)
+ * Devuelve el incendio normalizado y, si viene `foto` en la respuesta,
+ * la mete en `fotos` y también como `portadaUrl` (si no existe).
+ */
+export async function createIncendioWithReporteForm(params: CreateWithReporteFormParams): Promise<Incendio> {
+  const fd = new FormData();
+  fd.append('incendio', JSON.stringify(params.incendio));
+  fd.append('reporte', JSON.stringify(params.reporte));
+  if (params.file) {
+    fd.append('file', params.file as any);
+  }
+
+  const { data } = await api.post('/incendios/with-reporte', fd, {
+    transformRequest: (x) => x, // deja que Axios defina el boundary
+  });
+
+  // Si el backend devuelve { foto: { url, ... } }, adjúntala
+  const merged = {
+    ...data,
+    fotos: Array.isArray(data?.fotos) ? data.fotos.slice() : [],
+  };
+
+  if (data?.foto?.url) {
+    const foto = data.foto;
+    merged.fotos.push({
+      id: foto.foto_reporte_uuid ?? foto.id ?? 'foto-0',
+      url: foto.url,
+      orden: 0,
+    });
+    // si no hay portadaUrl, usa la recién subida
+    if (!merged.portadaUrl && !merged.portada_url) {
+      merged.portadaUrl = foto.url;
+    }
+  }
+
+  return fromBackendIncendio(merged);
+}
+
+/**
+ * Wrapper opcional: si se pasa `file`, usa multipart; si no, usa el JSON actual.
+ */
+export async function createIncendioWithReporteSmart(
+  payload: CreateWithReportePayload & {
+    file?: { uri: string; name: string; type: string } | null;
+    creditoFoto?: string | null;
+  }
+) {
+  if (payload.file) {
+    const { file, creditoFoto, ...rest } = payload as any;
+    return createIncendioWithReporteForm({
+      incendio: {
+        titulo: rest.titulo,
+        descripcion: rest.descripcion ?? null,
+        centroide: rest.centroide,
+        estado_incendio_uuid: rest.estado_incendio_uuid,
+      },
+      reporte: {
+        medio_uuid: rest.reporte.medio_uuid,
+        ubicacion: rest.reporte.ubicacion ?? rest.centroide,
+        reportado_en: rest.reporte.reportado_en ?? new Date().toISOString(),
+        observaciones: rest.reporte.observaciones ?? null,
+        telefono: rest.reporte.telefono ?? null,
+        departamento_uuid: rest.reporte.departamento_uuid ?? null,
+        municipio_uuid: rest.reporte.municipio_uuid ?? null,
+        lugar_poblado: rest.reporte.lugar_poblado ?? null,
+        finca: rest.reporte.finca ?? null,
+        credito: creditoFoto ?? null,
+      },
+      file: file ?? undefined,
+    });
+  }
+
+  // Si no hay archivo, usa el flujo JSON que ya tenías
+  return createIncendioWithReporte(payload);
+}
+
 /** ---------- Otros helpers ---------- */
 export async function hideIncendio(id: string) {
   const { data } = await api.patch(`/incendios/${id}`, {
@@ -545,7 +676,6 @@ export async function listIncendiosSinAprobar(params?: {
     pageSize: data.pageSize ?? params?.pageSize ?? (data.items?.length ?? 0),
     items: (data.items ?? []).map(fromBackendIncendio) as Incendio[],
   } as Paginated<Incendio>;
-
 }
 
 
@@ -559,4 +689,3 @@ export async function rechazarIncendio(id: string, motivo: string) {
   const { data } = await api.patch(`/incendios/${id}/rechazar`, { motivo_rechazo: motivo });
   return fromBackendIncendio(data);
 }
-

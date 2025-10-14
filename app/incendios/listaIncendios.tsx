@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { View, StyleSheet, FlatList, TouchableOpacity, RefreshControl } from 'react-native';
+import { View, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Image } from 'react-native';
 import { Text, TextInput, Chip, Menu, Divider, Button, Snackbar } from 'react-native-paper';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
@@ -24,6 +24,28 @@ function timeAgo(iso?: string | null) {
   if (hrs > 0) return `Hace aproximadamente ${hrs} hora${hrs > 1 ? 's' : ''}`;
   if (min > 0) return `Hace aproximadamente ${min} minuto${min > 1 ? 's' : ''}`;
   return 'Hace segundos';
+}
+
+// Miniatura: intenta varias fuentes del objeto normalizado
+function pickThumb(it: Incendio): string | null {
+  const direct =
+    it.thumbnailUrl ||
+    it.portadaUrl ||
+    (Array.isArray(it.fotos) && it.fotos[0]?.url) ||
+    (Array.isArray(it.reportes) && it.reportes[0]?.fotos?.[0]?.url) ||
+    null;
+
+  if (!direct) return null;
+
+  // cache-busting simple usando actualizado/creado o estadoActual.fecha
+  const t =
+    (it as any).actualizadoEn ||
+    (it as any).creadoEn ||
+    it.estadoActual?.fecha ||
+    new Date().toISOString();
+
+  const ts = Date.parse(String(t)) || Date.now();
+  return direct.includes('?') ? `${direct}&v=${ts}` : `${direct}?v=${ts}`;
 }
 
 /* ------------------ tipos filtro ------------------ */
@@ -137,7 +159,6 @@ export default function IncendiosList() {
             acc[id] = estado;
           }
         } catch (e) {
-          // no rompas la lista si falla uno
           acc[id] = acc[id] || 'Pendiente';
           const ae = e as any;
           console.warn('[LISTA][getCierre] fallo id', id, ae?.response?.status ?? ae);
@@ -209,7 +230,7 @@ export default function IncendiosList() {
     return ['TODOS', ...arr];
   }, [items]);
 
-  // aplica búsqueda y filtros locales (se mantiene tu filtro por estadoActual)
+  // aplica búsqueda y filtros locales
   const data = useMemo(() => {
     const s = q.trim().toLowerCase();
 
@@ -337,25 +358,34 @@ export default function IncendiosList() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={safeLoad} />}
         renderItem={({ item }) => {
           const itemId = String((item as any).id ?? (item as any).incendio_uuid);
-          const updatedAt = (item as any).creadoEn || (item as any).fechaInicio || item.estadoActual?.fecha || null;
+          const updatedAt =
+            (item as any).creadoEn ||
+            (item as any).fechaInicio ||
+            item.estadoActual?.fecha ||
+            null;
           const aprobado = (item as any)?.aprobado === true;
 
           const estadoCierre = cierreEstados[itemId];
           const flame = cierreColor(estadoCierre);
+
+          const thumb = pickThumb(item);
 
           return (
             <TouchableOpacity
               style={styles.row}
               activeOpacity={0.8}
               onPress={() =>
-                router.push({
-                  pathname: '/incendios/detalles',
-                  params: { id: itemId },
-                })
+                router.push({ pathname: '/incendios/detalles', params: { id: itemId } })
               }
             >
-              <View style={styles.leftIcon}>
-                <Ionicons name="flame" size={28} color={flame} />
+              <View style={styles.left}>
+                {thumb ? (
+                  <Image source={{ uri: thumb }} style={styles.thumb} />
+                ) : (
+                  <View style={styles.leftIcon}>
+                    <Ionicons name="flame" size={28} color={flame} />
+                  </View>
+                )}
               </View>
 
               <View style={styles.middle}>
@@ -447,7 +477,11 @@ const styles = StyleSheet.create({
   sep: { height: 10 },
 
   row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 10 },
+
+  left: { width: 56, height: 56, marginRight: 10, alignItems: 'center', justifyContent: 'center' },
+  thumb: { width: 56, height: 56, borderRadius: 8, backgroundColor: '#eee' },
   leftIcon: { width: 40, alignItems: 'center' },
+
   middle: { flex: 1, paddingRight: 10 },
 
   rowTitle: { fontWeight: 'bold', fontSize: 15, color: '#222' },
@@ -463,12 +497,6 @@ const styles = StyleSheet.create({
   },
   badgeOk: { backgroundColor: '#E8F5E9', color: '#2E7D32' },
   badgeWarn: { backgroundColor: '#FFF3E0', color: '#E65100' },
-
-  // estilos de fallback por si no usas cierreBadgeStyle (dejados por compatibilidad)
-  badgeCierreExt: { backgroundColor: '#E8F5E9', color: '#2E7D32' },
-  badgeCierreCtrl: { backgroundColor: '#E3F2FD', color: '#1565C0' },
-  badgeCierreAtn: { backgroundColor: '#FFF3E0', color: '#E65100' },
-  badgeCierrePend: { backgroundColor: '#F5F5F5', color: '#616161' },
 
   right: { width: 120, alignItems: 'flex-end' },
   rightTime: { color: '#666', fontSize: 12 },

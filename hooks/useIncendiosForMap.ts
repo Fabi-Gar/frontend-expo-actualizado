@@ -1,17 +1,15 @@
 // hooks/useIncendiosForMap.ts
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
-import { listIncendiosArray, Incendio } from '@/services/incendios';
+import { listIncendiosArray, Incendio, getIncendiosMap } from '@/services/incendios';
 import { WeightedLatLng, getLatLngFromIncendio } from '@/app/utils/map';
 
 type Options = {
   /** Mostrar sólo visiblesPublico===true (por defecto true) */
   onlyPublic?: boolean;
   /** Filtrar por etiquetas (ids en string/number) */
-  // eslint-disable-next-line @typescript-eslint/array-type
   etiquetaIds?: Array<string | number>;
-  /** Tamaño de página para carga bulk (default 2000) */
+  /** Tamaño de página para carga (default 2000) */
   pageSize?: number;
-  /** Autofit una sola vez cuando haya elementos (el contenedor decide) */
 };
 
 const weightByNombre = (nombre?: string) => {
@@ -31,7 +29,7 @@ export function useIncendiosForMap(opts: Options = {}) {
   } = opts;
 
   const etiquetaSet = useMemo(
-    () => new Set((etiquetaIds || []).map((x) => String(x))),
+    () => new Set((etiquetaIds || []).map(String)),
     [etiquetaIds]
   );
 
@@ -39,45 +37,69 @@ export function useIncendiosForMap(opts: Options = {}) {
   const [loading, setLoading] = useState(false);
   const loadedOnceRef = useRef(false);
 
-  const reload = useCallback(async () => {
+  const fetchMapFeed = useCallback(async (limit: number) => {
     try {
-      setLoading(true);
-      const arr = await listIncendiosArray(1, pageSize);
-      let next = arr || [];
-      if (onlyPublic) {
-        next = next.filter((x) => x.visiblePublico === true);
+      const resp = await getIncendiosMap({
+        include: 'thumbnail',
+        order: 'actividad',
+        limit,
+        page: 1,
+      });
+      return (resp?.items ?? []) as unknown as Incendio[];
+    } catch (e) {
+      // Fallback automático si el endpoint no existe / falla
+      console.warn('[useIncendiosForMap] getIncendiosMap falló, uso listIncendiosArray()', e);
+      const arr = await listIncendiosArray(1, limit);
+      return (arr || []) as Incendio[];
+    }
+  }, []);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try {
+      let next: Incendio[] = [];
+
+      if (etiquetaSet.size > 0) {
+        // Si hay filtros por etiqueta, necesitamos el listado completo (trae etiquetas)
+        const arr = await listIncendiosArray(1, pageSize);
+        next = (arr || []) as Incendio[];
+      } else {
+        // Intentar feed optimizado (con thumbnail); si falla, caemos al listado completo
+        next = await fetchMapFeed(pageSize);
       }
+
+      if (onlyPublic) next = next.filter((x: any) => x.visiblePublico === true);
+
       if (etiquetaSet.size) {
-        next = next.filter((it) =>
-          (it.etiquetas || []).some((e) => etiquetaSet.has(String(e.id)))
+        next = next.filter((it: any) =>
+          (it.etiquetas || []).some((e: any) => etiquetaSet.has(String(e.id)))
         );
       }
+
       setItems(next);
       loadedOnceRef.current = true;
     } finally {
       setLoading(false);
     }
-  }, [onlyPublic, etiquetaSet, pageSize]);
+  }, [onlyPublic, etiquetaSet, pageSize, fetchMapFeed]);
 
-  useEffect(() => {
-    void reload();
-  }, [reload]);
+  useEffect(() => { void reload(); }, [reload]);
 
-const heatData: WeightedLatLng[] = useMemo(() => {
-  return (items || [])
-    .map((it) => {
-      const pos = getLatLngFromIncendio(it);
-      if (!pos) return null;
-      const nombre = it?.estadoActual?.estado?.nombre;
-      const weight = weightByNombre(nombre);
-      return { latitude: pos.latitude, longitude: pos.longitude, weight };
-    })
-    .filter(Boolean) as WeightedLatLng[];
-}, [items]);
+  const heatData: WeightedLatLng[] = useMemo(() => {
+    return (items || [])
+      .map((it) => {
+        const pos = getLatLngFromIncendio(it as any);
+        if (!pos) return null;
+        const nombre = (it as any)?.estadoActual?.estado?.nombre;
+        const weight = weightByNombre(nombre);
+        return { latitude: pos.latitude, longitude: pos.longitude, weight };
+      })
+      .filter(Boolean) as WeightedLatLng[];
+  }, [items]);
 
   return {
-    items,              // incendios (filtrados)
-    heatData,           // puntos para Heatmap
+    items,              // puede traer thumbnailUrl cuando viene del feed de mapa
+    heatData,
     loading,
     reload,
     loadedOnce: loadedOnceRef.current,

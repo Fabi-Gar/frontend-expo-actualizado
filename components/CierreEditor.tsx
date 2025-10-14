@@ -35,7 +35,6 @@ import {
   type CatalogoItem,
 } from '@/services/catalogos';
 
-
 const tecnicaSlugFromNombre = (nombre?: string) => {
   const s = (nombre || '').trim().toLowerCase();
   if (!s) return undefined;
@@ -45,12 +44,13 @@ const tecnicaSlugFromNombre = (nombre?: string) => {
   return undefined;
 };
 
-// Busca el id del catálogo que corresponde a un slug del back
-const tecnicaIdFromSlug = (slug: 'directo' | 'indirecto' | 'control_natural', tecnicasCat: CatalogoItem[]) => {
+const tecnicaIdFromSlug = (
+  slug: 'directo' | 'indirecto' | 'control_natural',
+  tecnicasCat: CatalogoItem[]
+) => {
   const item = tecnicasCat.find((t) => tecnicaSlugFromNombre(t.nombre) === slug);
   return item?.id;
 };
-
 
 /* =======================
  * Diálogo de selección
@@ -261,11 +261,58 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
   const [instituciones, setInstituciones] = useState<CatalogoItem[]>([]);
   const [tecnicasCat, setTecnicasCat] = useState<CatalogoItem[]>([]);
 
-  const loadCatalog = useCallback(async (catalogName: string, setter: (items: CatalogoItem[]) => void) => {
-    try {
-      const resp = await listCatalogoItems(catalogName, { page: 1, pageSize: 200 });
-      setter(resp.items ?? []);
-    } catch { /* noop */ }
+  // Carga todos los catálogos de una vez y devuelve las listas (evita depender del estado adentro de reload)
+  const fetchAllCatalogs = useCallback(async () => {
+    const [
+      catTiposIncendio,
+      catTiposPropiedad,
+      catCausas,
+      catIniciado,
+      catTerrestres,
+      catAereos,
+      catAcuaticos,
+      catAbastos,
+      catInstituciones,
+      catTecnicas,
+    ] = await Promise.all([
+      listCatalogoItems('tipos_incendio', { page: 1, pageSize: 200 }),
+      listCatalogoItems('tipo_propiedad', { page: 1, pageSize: 200 }),
+      listCatalogoItems('causas_catalogo', { page: 1, pageSize: 200 }),
+      listCatalogoItems('iniciado_junto_a_catalogo', { page: 1, pageSize: 200 }),
+      listCatalogoItems('medios_terrestres_catalogo', { page: 1, pageSize: 200 }),
+      listCatalogoItems('medios_aereos_catalogo', { page: 1, pageSize: 200 }),
+      listCatalogoItems('medios_acuaticos_catalogo', { page: 1, pageSize: 200 }),
+      listCatalogoItems('abastos_catalogo', { page: 1, pageSize: 200 }),
+      listCatalogoItems('instituciones', { page: 1, pageSize: 200 }),
+      listCatalogoItems('tecnicas_extincion_catalogo', { page: 1, pageSize: 200 }),
+    ]);
+
+    const cats = {
+      tiposIncendio: catTiposIncendio.items ?? [],
+      tiposPropiedad: catTiposPropiedad.items ?? [],
+      causas: catCausas.items ?? [],
+      iniciadoJuntoA: catIniciado.items ?? [],
+      mediosTerrestres: catTerrestres.items ?? [],
+      mediosAereos: catAereos.items ?? [],
+      mediosAcuaticos: catAcuaticos.items ?? [],
+      abastos: catAbastos.items ?? [],
+      instituciones: catInstituciones.items ?? [],
+      tecnicasCat: catTecnicas.items ?? [],
+    };
+
+    // Actualiza estado (no afecta deps de reload, que usa 'cats' locales)
+    setTiposIncendio(cats.tiposIncendio);
+    setTiposPropiedad(cats.tiposPropiedad);
+    setCausas(cats.causas);
+    setIniciadoJuntoA(cats.iniciadoJuntoA);
+    setMediosTerrestres(cats.mediosTerrestres);
+    setMediosAereos(cats.mediosAereos);
+    setMediosAcuaticos(cats.mediosAcuaticos);
+    setAbastos(cats.abastos);
+    setInstituciones(cats.instituciones);
+    setTecnicasCat(cats.tecnicasCat);
+
+    return cats;
   }, []);
 
   // Form
@@ -341,28 +388,17 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
   const [dlgIniciadoOpen, setDlgIniciadoOpen] = useState(false);
   const [dlgCausaOpen, setDlgCausaOpen] = useState(false);
 
-  // Helpers de suma
+  // Helpers
   const sumValues = (obj: Record<string, number>) =>
     Object.values(obj).reduce((acc, n) => acc + (Number.isFinite(n) ? Number(n) : 0), 0);
 
-  // Carga
+  // Carga principal (sin loops)
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      await Promise.all([
-        loadCatalog('tipos_incendio', setTiposIncendio),
-        loadCatalog('tipo_propiedad', setTiposPropiedad),
-        loadCatalog('causas_catalogo', setCausas),
-        loadCatalog('iniciado_junto_a_catalogo', setIniciadoJuntoA),
-        loadCatalog('medios_terrestres_catalogo', setMediosTerrestres),
-        loadCatalog('medios_aereos_catalogo', setMediosAereos),
-        loadCatalog('medios_acuaticos_catalogo', setMediosAcuaticos),
-        loadCatalog('abastos_catalogo', setAbastos),
-        loadCatalog('instituciones', setInstituciones),
-        loadCatalog('tecnicas_extincion_catalogo', setTecnicasCat),
-      ]);
-
+      const cats = await fetchAllCatalogs(); // ← catálogos locales y en estado
       const c = await getCierre(incendioId);
+
       setEstadoCierre(c.estado_cierre);
 
       setTipoPrincipalId(c?.tipo_incendio_principal?.id ?? undefined);
@@ -394,16 +430,15 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
 
       setSv([]);
 
-      // t.tecnica viene como slug del enum; lo mapeamos a id de catálogo para el UI
+      // mapear técnicas con cats.tecnicasCat local (no dependas del estado)
       const tb: Record<string, number> = {};
       for (const t of c.tecnicas || []) {
         const slug = (t as any).tecnica as 'directo' | 'indirecto' | 'control_natural' | undefined;
         if (!slug) continue;
-        const id = tecnicaIdFromSlug(slug, tecnicasCat);
+        const id = tecnicaIdFromSlug(slug, cats.tecnicasCat);
         if (id) tb[id] = Number((t as any).pct || 0);
       }
       setTecById(tb);
-
 
       const mt: Record<string, number> = {};
       (c.medios?.terrestres || []).forEach((m) => (mt[m.medio_terrestre_id] = Number(m.cantidad || 0)));
@@ -437,7 +472,7 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
     } finally {
       setLoading(false);
     }
-  }, [incendioId, loadCatalog, tecnicasCat]);
+  }, [incendioId, fetchAllCatalogs]);
 
   useEffect(() => {
     if (visible) reload();
@@ -488,8 +523,7 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
 
     if (sv.length) payload.superficie_vegetacion = sv;
 
-    // 🔧 TECNICAS: enviar `tecnica_id`
-    // Convertimos id -> slug del enum que acepta el back
+    // TECNICAS: id -> slug
     const tecArr: { tecnica: 'directo' | 'indirecto' | 'control_natural'; pct: number }[] = [];
     for (const [id, pct0] of Object.entries(tecById)) {
       const pct = Number(pct0);
@@ -500,9 +534,7 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
         tecArr.push({ tecnica: slug, pct });
       }
     }
-    // solo incluir si hay algo válido
     if (tecArr.length) payload.tecnicas = tecArr;
-
 
     const mtArr = Object.entries(medTerCant)
       .filter(([_, c]) => Number(c) > 0)
@@ -551,9 +583,41 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
     if (nota && nota.trim().length) payload.nota = nota.trim();
 
     return payload;
-  }, [tipoPrincipalId, compArray, topoPlano, topoOndulado, topoQuebrado, propSel, iniciadoId, iniciadoOtro, scTer, scAer, scCtrl, scExt, supTotal, supDentro, supFuera, supNombreAP, sv, medTerCant, medAerPct, medAcuCant, instSel, abastoCant, causaId, causaOtro, tempC, hrPct, vientoVel, vientoDir, nota, tecById, tecnicasCat]);
+  }, [
+    tipoPrincipalId,
+    compArray,
+    topoPlano,
+    topoOndulado,
+    topoQuebrado,
+    propSel,
+    iniciadoId,
+    iniciadoOtro,
+    scTer,
+    scAer,
+    scCtrl,
+    scExt,
+    supTotal,
+    supDentro,
+    supFuera,
+    supNombreAP,
+    sv,
+    medTerCant,
+    medAerPct,
+    medAcuCant,
+    instSel,
+    abastoCant,
+    causaId,
+    causaOtro,
+    tempC,
+    hrPct,
+    vientoVel,
+    vientoDir,
+    nota,
+    tecById,
+    tecnicasCat
+  ]);
 
-  // Validación “client-side” de sumas (para evitar 400 del back)
+  // Validación cliente
   const validateBeforeSave = useCallback(() => {
     const sumTec = sumValues(tecById);
     if (sumTec > 100.0001) {
@@ -1047,7 +1111,6 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
                     onPress={() =>
                       setInstSel((prev) => {
                         const s = new Set(prev);
-                        // eslint-disable-next-line no-unused-expressions
                         checked ? s.delete(i.id) : s.add(i.id);
                         return s;
                       })
@@ -1119,7 +1182,7 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
                 label="Viento (dir)"
                 value={vientoDir ?? ''}
                 onChangeText={(t) => setVientoDir(t || undefined)}
-                style={{ width: 100 }}
+                style={{ width: 125}}
               />
             </View>
 
@@ -1300,7 +1363,7 @@ const styles = StyleSheet.create({
   },
   dialogTitle: { fontWeight: 'bold', fontSize: 16, marginBottom: 6 },
 
-  sepLarge: { marginTop: 18, marginHorizontal: 16, backgroundColor: '#eee', height: StyleSheet.hairlineWidth },
+  sepLarge: { marginTop: 125, marginHorizontal: 16, backgroundColor: '#eee', height: StyleSheet.hairlineWidth },
 
   pickerCard: {
     position: 'absolute',
