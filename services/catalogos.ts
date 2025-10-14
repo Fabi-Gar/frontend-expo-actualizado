@@ -50,6 +50,34 @@ const setQP = (q: URLSearchParams, k: string, v: any) => {
   q.set(k, String(v))
 }
 
+// === Compatibilidad para CierreEditor (nombres esperados) ===
+export type CatalogItem = CatalogoItem;
+
+export type CatalogName =
+  | 'medios'
+  | 'instituciones'
+  | 'tipos_incendio'
+  | 'tipo_propiedad'
+  | 'causas_catalogo'
+  | 'iniciado_junto_a_catalogo'
+  | 'medios_aereos_catalogo'
+  | 'medios_terrestres_catalogo'
+  | 'medios_acuaticos_catalogo'
+  | 'abastos_catalogo'
+  | 'tecnicas_extincion_catalogo'
+  | 'roles';
+
+/** Devuelve solo el arreglo de items del catálogo indicado (paginado simple). */
+export async function listCatalog(
+  name: CatalogName,
+  page = 1,
+  pageSize = 100
+): Promise<CatalogItem[]> {
+  const { items } = await listCatalogoItems(name, { page, pageSize });
+  return items;
+}
+
+
 const norm = (r: any): Opcion => ({
   id:
     r?.rol_uuid ||

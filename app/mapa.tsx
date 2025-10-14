@@ -28,14 +28,17 @@ import { MapTypeDrawer, DRAWER_WIDTH } from '@/components/MapTypeDrawer';
 import { LeyendaDrawer } from '@/components/LeyendaDrawer';
 import { MenuDrawer } from '@/components/MenuDrawer';
 
-
-
+import { api } from '@/client';
 import { getUser } from '@/session';
 import { useIncendiosForMap } from '../hooks/useIncendiosForMap';
 import { useFirmsGT } from '../hooks/useFirmsGT';
 import { useMapRegion } from '../hooks/useMapRegion';
-import { getLatLngFromIncendio, getPinColor, probabilityFromConfidence, probabilityLabel } from '@/app/utils/map';
+import { getLatLngFromIncendio, probabilityFromConfidence, probabilityLabel } from '@/app/utils/map';
 import { isAdminUser } from './utils/roles';
+
+// 🔷 NUEVO: colores/estado desde cierre
+import { cierreColor, inferirEstadoCierre } from '@/app/utils/cierre';
+import { getCierre } from '@/services/cierre';
 
 /* ======= Constantes locales ======= */
 const AS_HEATMAP = 'heatmap';
@@ -43,7 +46,7 @@ const AS_HEATMAP = 'heatmap';
 const DEFAULT_REGION: Region = {
   latitude: 15.319,
   longitude: -91.472,
-  latitudeDelta: 2.2,     // abre un poco más para “ver algo” aunque no haya GPS
+  latitudeDelta: 2.2,
   longitudeDelta: 2.2,
 };
 
@@ -71,7 +74,7 @@ export default function Mapa() {
   const [leyendaOpen, setLeyendaOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
-  // ----- Control del mapa (hook) -----
+  // ----- Control del mapa -----
   const {
     mapRef, mapReadyRef, currentRegion, span,
     onRegionChangeComplete, setMapReady, centerOnUser, fitToCoordinates
@@ -137,17 +140,13 @@ export default function Mapa() {
     return () => sub && sub();
   }, []);
 
-
   // ===== Cargar/recargar incendios =====
   useEffect(() => { reload(); }, [reload]);
   useFocusEffect(useCallback(() => { reload(); }, [reload]));
 
-  // ===== Depuración: log de items y coordenadas inválidas =====
+  // ===== Depuración: coordenadas inválidas =====
   useEffect(() => {
-    if (!items?.length) {
-      console.log('[MAP] No hay incendios (items.length=0)');
-      return;
-    }
+    if (!items?.length) return;
     let invalid = 0;
     for (const it of items) {
       const pos = getLatLngFromIncendio(it as any);
@@ -155,25 +154,64 @@ export default function Mapa() {
     }
     if (invalid) {
       console.log(`[MAP] Incendios sin coord válidas: ${invalid}/${items.length}`);
-    } else {
-      console.log(`[MAP] Incendios con coord OK: ${items.length}`);
     }
   }, [items]);
 
-useEffect(() => {
-  if (items?.length) {
-    const first: any = items[0]; // 👈 cast
-    const pos = getLatLngFromIncendio(first);
-    console.log('[MAP] first incendio:', {
-      id: first?.id ?? first?.incendio_uuid,
-      latField: first?.lat,
-      lngField: first?.lng,
-      centroide: first?.centroide,   // ya no da error
-      parsed: pos,
-    });
-  }
-}, [items]);
+  // ===== NUEVO: estado de cierre y reportante por incendio =====
+  const [cierreEstados, setCierreEstados] = useState<Record<string, string>>({});
+  const [reportantes, setReportantes] = useState<Record<string, string>>({});
 
+  const loadCierreYReportante = useCallback(async (arr: any[]) => {
+    const ids = Array.from(new Set(arr.map((it) => String(it?.id ?? it?.incendio_uuid)))).filter(Boolean);
+    if (!ids.length) return;
+
+    const estAcc: Record<string, string> = {};
+    const repAcc: Record<string, string> = {};
+
+    await Promise.all(
+      ids.map(async (id) => {
+        try {
+          // Cierre / estado
+          const c = await getCierre(id);
+          const estado = c?.estado_cierre || inferirEstadoCierre(c?.secuencia_control || undefined);
+          estAcc[id] = estado;
+
+          // Reportante (tomamos el primer disponible; API sin orden → nos sirve igual para mostrar)
+          try {
+            const { data: rep } = await api.get(`/reportes?incendio_uuid=${id}&pageSize=1`);
+            const first = (rep?.items || [])[0] || null;
+            const name =
+              first?.reportado_por_nombre ||
+              [first?.reportado_por?.nombre, first?.reportado_por?.apellido].filter(Boolean).join(' ') ||
+              '';
+            if (name) repAcc[id] = name;
+          } catch {
+            // fallback al creador si no hay reporte
+            const it = arr.find((x) => String(x?.id ?? x?.incendio_uuid) === id);
+            const u = it?.creado_por || it?.creadoPor || null;
+            const by = [u?.nombre, u?.apellido].filter(Boolean).join(' ') || u?.email || '';
+            if (by) repAcc[id] = by;
+          }
+        } catch {
+          // si falla cierre, lo marcamos Pendiente y tratamos de sacar reportante del item
+          estAcc[id] = estAcc[id] || 'Pendiente';
+          const it = arr.find((x) => String(x?.id ?? x?.incendio_uuid) === id);
+          const u = it?.creado_por || it?.creadoPor || null;
+          const by = [u?.nombre, u?.apellido].filter(Boolean).join(' ') || u?.email || '';
+          if (by) repAcc[id] = by;
+        }
+      })
+    );
+
+    setCierreEstados((prev) => ({ ...prev, ...estAcc }));
+    setReportantes((prev) => ({ ...prev, ...repAcc }));
+  }, []);
+
+  // cargar estados/reportantes cada vez que cambian items
+  useEffect(() => {
+    if (!items?.length) return;
+    loadCierreYReportante(items as any[]);
+  }, [items, loadCierreYReportante]);
 
   // Autofit una sola vez cuando haya datos
   const firstAutoFitDoneRef = useRef(false);
@@ -256,40 +294,42 @@ useEffect(() => {
         if (!coord) return null;
         const { latitude: lat, longitude: lng } = coord;
 
+        const id = String((item as any).id ?? (item as any).incendio_uuid);
+        const estado = cierreEstados[id]; // ← estado de cierre cargado
+        const pinColor = cierreColor(estado); // ← color por estado de cierre
+        const publicadoPor = reportantes[id] ||
+          (() => {
+            const u = (item as any).creado_por || (item as any).creadoPor || null;
+            return [u?.nombre, u?.apellido].filter(Boolean).join(' ') || u?.email || 'Anónimo';
+          })();
+
         const cover =
           (item as any)?.portadaUrl ||
+          (item as any)?.foto_portada_url ||
           (item as any)?.thumbnailUrl ||
-          undefined;
+          (item as any)?.fotos?.[0]?.url ||
+          null;
 
         return (
-      <Marker
-        key={(item as any).id ?? (item as any).incendio_uuid}
-        coordinate={coord}
-        pinColor={getPinColor(item as any)}
-        tracksViewChanges={false}
-        accessibilityLabel={`Incendio ${(item as any).titulo || 'Sin título'}`}
-      >
-        <Callout
-          onPress={() =>
-            router.push(`/incendios/detalles?id=${(item as any).id ?? (item as any).incendio_uuid}`)
-          }
-        >
-          <View style={{ maxWidth: 240 }}>
-            {/* Título */}
-            <Text style={{ fontWeight: 'bold', fontSize: 15 }}>
-              {(item as any).titulo || 'Sin título'}
-            </Text>
+          <Marker
+            key={id}
+            coordinate={coord}
+            pinColor={pinColor}
+            tracksViewChanges={false}
+            accessibilityLabel={`Incendio ${(item as any).titulo || 'Sin título'}`}
+          >
+            <Callout
+              onPress={() =>
+                router.push(`/incendios/detalles?id=${id}`)
+              }
+            >
+              <View style={{ maxWidth: 240 }}>
+                {/* Título */}
+                <Text style={{ fontWeight: 'bold', fontSize: 15 }}>
+                  {(item as any).titulo || 'Sin título'}
+                </Text>
 
-            {/* Imagen */}
-            {(() => {
-              const cover =
-                (item as any).portadaUrl ||
-                (item as any).foto_portada_url ||
-                (item as any).thumbnailUrl ||
-                (item as any).fotos?.[0]?.url ||
-                null;
-
-              return (
+                {/* Imagen */}
                 <TouchableOpacity
                   accessibilityRole="imagebutton"
                   accessibilityLabel="Ver foto a pantalla completa"
@@ -300,65 +340,42 @@ useEffect(() => {
                   }}
                 >
                   <Image
-                    source={
-                      cover
-                        ? { uri: cover }
-                        : require('@/assets/images/placeholder_incendio.png')
-                    }
+                    source={cover ? { uri: cover } : require('@/assets/images/placeholder_incendio.png')}
                     style={{ width: 240, height: 120, borderRadius: 8, marginTop: 6 }}
                     resizeMode="cover"
                   />
                 </TouchableOpacity>
-              );
-            })()}
 
-            {/* Descripción */}
-            <Text style={{ marginTop: 6 }} numberOfLines={4}>
-              {(item as any).descripcion || 'Sin descripción'}
-            </Text>
+                {/* Descripción */}
+                <Text style={{ marginTop: 6 }} numberOfLines={4}>
+                  {(item as any).descripcion || 'Sin descripción'}
+                </Text>
 
-            {/* Región (si hay) */}
-            <Text style={{ marginTop: 4, color: '#555', fontSize: 12 }}>
-              {(() => {
-                const r = (item as any).region;
-                const nombreRegion =
-                  typeof r === 'object' && r ? (r.nombre || r.codigo || '') :
-                  typeof r === 'string' ? r : '';
-              return `Región: ${nombreRegion || 'Sin región'}`;
-              })()}
-            </Text>
+                {/* Publicado por */}
+                <Text style={{ marginTop: 4, color: '#666', fontSize: 12 }}>
+                  {`Publicado por: ${publicadoPor || 'Anónimo'}`}
+                </Text>
 
-            {/* Publicado por */}
-            <Text style={{ marginTop: 2, color: '#666', fontSize: 12 }}>
-              {(() => {
-                const u = (item as any).creado_por || (item as any).creadoPor || null;
-                const name = [u?.nombre, u?.apellido].filter(Boolean).join(' ');
-                const by = name || u?.email || 'Anónimo';
-                return `Publicado por: ${by}`;
-              })()}
-            </Text>
+                {/* Estado de cierre */}
+                <Text style={{ color: '#777', fontSize: 12, marginTop: 2 }}>
+                  {`Estado: ${estado || 'Pendiente'}`}
+                </Text>
 
-            {/* Estado actual (si lo tienes calculado en el servicio) */}
-            <Text style={{ color: '#777', fontSize: 12, marginTop: 2 }}>
-              {((item as any).estadoActual?.estado?.nombre) || 'Reportado'}
-            </Text>
-
-            {/* Botón Ver */}
-            <View
-              style={{
-                marginTop: 8,
-                backgroundColor: '#4CAF50',
-                paddingVertical: 6,
-                borderRadius: 8,
-                alignItems: 'center',
-              }}
-            >
-              <Text style={{ color: '#fff', fontWeight: 'bold' }}>Ver</Text>
-            </View>
-          </View>
-        </Callout>
-      </Marker>
-
+                {/* Botón Ver */}
+                <View
+                  style={{
+                    marginTop: 8,
+                    backgroundColor: '#4CAF50',
+                    paddingVertical: 6,
+                    borderRadius: 8,
+                    alignItems: 'center',
+                  }}
+                >
+                  <Text style={{ color: '#fff', fontWeight: 'bold' }}>Ver</Text>
+                </View>
+              </View>
+            </Callout>
+          </Marker>
         );
       })}
     </>
@@ -366,9 +383,7 @@ useEffect(() => {
 
   return (
     <View style={styles.container}>
-      {/* Badge de depuración */}
       <View style={{ position: 'absolute', top: (insets.top || 0) + 8, left: 8, backgroundColor: '#0008', paddingHorizontal: 8, paddingVertical: 6, borderRadius: 8, zIndex: 4 }}>
-
       </View>
 
       <MapView
@@ -411,8 +426,8 @@ useEffect(() => {
           />
         )}
 
-        {/* Puntos FIRMS como markers (tap/callout) cuando hay suficiente zoom */}
-        {firmsEnabled && showFirmDots && (firmsGeo?.items?.features ?? []).map((f: any) => {
+        {/* Puntos FIRMS como markers */}
+        {firmsEnabled && span.latDelta < 0.05 && span.lngDelta < 0.05 && (firmsGeo?.items?.features ?? []).map((f: any) => {
           const [lon, lat] = f.geometry.coordinates as [number, number];
           const conf = Number(f.properties?.confidence ?? 0);
           const prob = probabilityFromConfidence(conf);
@@ -458,7 +473,6 @@ useEffect(() => {
         {renderMarkers()}
       </MapView>
 
-      {/* Loader overlay */}
       {(loading || firmsLoading) && (
         <View style={styles.loaderOverlay}>
           <ActivityIndicator size="large" />
@@ -521,7 +535,6 @@ useEffect(() => {
         <CustomButton icon="location" label="Cerca" onPress={centerOnUser} />
         <CustomButton icon="book" label="Leyenda" onPress={openLeyenda} />
         <CustomButton icon="refresh" label={loading ? '...' : 'Recargar'} onPress={reload} />
-        {/* Fit a Guatemala */}
         <CustomButton
           icon="map"
           label="GT"

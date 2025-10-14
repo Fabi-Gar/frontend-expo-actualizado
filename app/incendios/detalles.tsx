@@ -12,6 +12,9 @@ import { getUser } from '@/session';
 import { subscribe, EVENTS } from '@/hooks/events';
 import { showToast } from '@/hooks/uiStore';
 
+// 👇 nuevo
+import CierreEditor from '@/components/CierreEditor';
+
 type Tab = 'ACT' | 'REP' | 'INFO';
 
 export default function DetalleIncendio() {
@@ -24,6 +27,9 @@ export default function DetalleIncendio() {
   const [tab, setTab] = useState<Tab>('ACT');
   const [cierre, setCierre] = useState<any>(null);
   const [ultimoReporte, setUltimoReporte] = useState<any | null>(null);
+
+  // 👇 estado del editor
+  const [editorVisible, setEditorVisible] = useState(false);
 
   // ---- carga de usuario ----
   useEffect(() => {
@@ -105,7 +111,7 @@ export default function DetalleIncendio() {
   // ---- datos pestaña Actualizaciones ----
   const updates = useMemo(() => {
     const f = (d?: string) => (d ? new Date(d).toLocaleString() : undefined);
-    const out: Array<{ id: string; title: string; date?: string; text?: string }> = [];
+    const out: { id: string; title: string; date?: string; text?: string }[] = [];
 
     // Prioriza el feed de cierre
     if (cierre?.updates?.length) {
@@ -118,7 +124,7 @@ export default function DetalleIncendio() {
         });
       }
     } else {
-      // Fallback: estadoActual + reportes (si existieran en otra vista)
+      // Fallback: estadoActual + reportes
       if ((item as any)?.estadoActual) {
         const ea = (item as any).estadoActual;
         out.push({
@@ -174,7 +180,7 @@ export default function DetalleIncendio() {
   const repFecha = ultimoReporte?.reportado_en ? new Date(ultimoReporte.reportado_en).toLocaleString() : '—';
   const repMedio = ultimoReporte?.medio?.nombre || '—';
 
-  // ------ datos del reportante (preferimos del reporte; si no, del creador) ------
+  // ------ datos del reportante ------
   const repUsuario = ultimoReporte?.reportado_por || (item as any)?.creado_por || (item as any)?.creadoPor || null;
   const repNombre = [repUsuario?.nombre, repUsuario?.apellido].filter(Boolean).join(' ') || ultimoReporte?.reportado_por_nombre || '—';
   const repInstit = ultimoReporte?.institucion?.nombre || (repUsuario?.institucion?.nombre ?? '—');
@@ -215,7 +221,20 @@ export default function DetalleIncendio() {
     );
   };
 
-  // ------- render de secciones del cierre (solo si existen) -------
+  const openEditor = async () => {
+    try {
+      if (!cierre) {
+        await initCierre(String(id));
+        showToast({ type: 'success', message: 'Cierre iniciado' });
+        await refetch();
+      }
+      setEditorVisible(true);
+    } catch {
+      Alert.alert('Error', 'No se pudo iniciar el cierre');
+    }
+  };
+
+  // ------- render de secciones del cierre -------
   const renderCierre = () => {
     if (!cierre) {
       return (
@@ -225,25 +244,26 @@ export default function DetalleIncendio() {
             <Button
               mode="outlined"
               style={{ marginTop: 8 }}
-              onPress={async () => {
-                try { await initCierre(String(id)); await refetch(); showToast({ type: 'success', message: 'Cierre iniciado' }); }
-                catch { Alert.alert('Error', 'No se pudo iniciar el cierre'); }
-              }}
+              onPress={openEditor}
             >
-              Iniciar cierre
+              Iniciar y agregar datos de cierre
             </Button>
           )}
         </View>
       );
     }
 
-    const yaExtinguido = estadoCierre === 'Extinguido';
 
     return (
       <>
         {/* Badge de estado */}
-        <View style={{ marginBottom: 8 }}>
+        <View style={{ marginBottom: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
           <StatusBadge status={estadoCierre} />
+          {puedeModerarse && (
+            <Button mode="outlined" onPress={() => setEditorVisible(true)}>
+              Editar datos de cierre
+            </Button>
+          )}
         </View>
 
         {/* Tipo principal / Composición */}
@@ -446,164 +466,178 @@ export default function DetalleIncendio() {
   };
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      {/* Top bar */}
-      <View style={styles.topBar}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={24} color="#333" />
-        </TouchableOpacity>
-        <Text style={styles.pageTitle}>Detalles del incendio</Text>
-        <View style={{ width: 24 }} />
-      </View>
-
-      {/* Header */}
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.title}>{item.titulo}</Text>
-          {/* Subtítulo muestra el estado del cierre calculado */}
-          <Text style={styles.sub}>{estadoCierre}</Text>
-        </View>
-
-        {puedeModerarse && (
-          <TouchableOpacity onPress={() => router.push({ pathname: '/incendios/crear', params: { id: String(id) } })}>
-            <Text style={styles.link}>Editar</Text>
+    <>
+      <ScrollView contentContainerStyle={styles.container}>
+        {/* Top bar */}
+        <View style={styles.topBar}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+            <Ionicons name="arrow-back" size={24} color="#333" />
           </TouchableOpacity>
-        )}
-      </View>
+          <Text style={styles.pageTitle}>Detalles del incendio</Text>
+          <View style={{ width: 24 }} />
+        </View>
 
-      {/* KPIs arriba del todo sobre el último reporte */}
-      <View style={styles.kpisTop}>
-        <View style={styles.kpiBox}>
-          <Text style={styles.kpiTop}>Departamento</Text>
-          <Text style={styles.kpiBottom}>{repDepto}</Text>
-        </View>
-        <View style={styles.kpiBox}>
-          <Text style={styles.kpiTop}>Municipio</Text>
-          <Text style={styles.kpiBottom}>{repMuni}</Text>
-        </View>
-        <View style={styles.kpiBox}>
-          <Text style={styles.kpiTop}>Reportado en</Text>
-          <Text style={styles.kpiBottom}>{repFecha}</Text>
-        </View>
-        <View style={styles.kpiBox}>
-          <Text style={styles.kpiTop}>Medio</Text>
-          <Text style={styles.kpiBottom}>{repMedio}</Text>
-        </View>
-      </View>
-
-      {/* Estado/Aprobado */}
-      <View style={styles.kpis}>
-        <View style={styles.kpi}>
-          <Text style={styles.kpiTop}>Estado</Text>
-          {/* KPI de estado también usa el estado calculado */}
-          <Text style={styles.kpiBottom}>{estadoCierre}</Text>
-        </View>
-        <View style={styles.kpi}>
-          <Text style={styles.kpiTop}>Aprobado</Text>
-          <Text style={styles.kpiBottom}>{isAprobado ? 'Sí' : 'No'}</Text>
-        </View>
-      </View>
-
-      <Text style={styles.meta}>
-        Creado por {[((item as any)?.creado_por?.nombre || (item as any)?.creadoPor?.nombre), ((item as any)?.creado_por?.apellido || (item as any)?.creadoPor?.apellido)]
-          .filter(Boolean).join(' ') || '—'}
-        {(item as any).creadoEn || (item as any).creado_en ? ` • ${new Date(((item as any).creadoEn || (item as any).creado_en)).toLocaleString()}` : ''}
-      </Text>
-
-      {/* Acciones principales */}
-      {(!isAprobado && puedeModerarse) ? (
-        <View style={{ flexDirection: 'row', gap: 10 }}>
-          <Button
-            mode="contained"
-            style={[styles.mainBtn, { backgroundColor: '#2E7D32' }]}
-            onPress={async () => {
-              try { await aprobarIncendio(String(id)); await refetch(); showToast({ type: 'success', message: 'Incendio aprobado' }); }
-              catch { Alert.alert('Error', 'No se pudo aprobar'); }
-            }}
-          >Aprobar</Button>
-          <Button
-            mode="contained"
-            style={[styles.mainBtn, { backgroundColor: '#C62828' }]}
-            onPress={async () => {
-              try { await rechazarIncendio(String(id), 'Revisión: no aprobado'); await refetch(); showToast({ type: 'info', message: 'Incendio rechazado' }); }
-              catch { Alert.alert('Error', 'No se pudo rechazar'); }
-            }}
-          >Rechazar</Button>
-        </View>
-      ) : (
-        <Button mode="contained" style={[styles.mainBtn, { backgroundColor: '#00B894' }]} onPress={onShare}>
-          Compartir incidencia
-        </Button>
-      )}
-
-      {/* Tabs centradas */}
-      <View style={styles.tabsWrap}>
-        <View style={styles.tabsCentered}>
-          <TouchableOpacity onPress={() => setTab('ACT')}>
-            <Text style={[styles.tab, tab === 'ACT' && styles.tabSel]}>Actualizaciones</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setTab('REP')}>
-            <Text style={[styles.tab, tab === 'REP' && styles.tabSel]}>Reportante</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setTab('INFO')}>
-            <Text style={[styles.tab, tab === 'INFO' && styles.tabSel]}>Información</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-      <Divider />
-
-      {/* Contenido tabs */}
-      <View style={{ paddingHorizontal: 4 }}>
-        {tab === 'ACT' && (
-          <View style={{ paddingVertical: 12 }}>
-            <Text style={styles.sectionTitle}>Historial / Reportes</Text>
-            {updates.length ? (
-              updates.map((u) => (
-                <View key={u.id} style={styles.card}>
-                  <Text style={{ fontWeight: 'bold' }}>{u.title}</Text>
-                  {u.date ? <Text style={{ color: '#666' }}>{u.date}</Text> : null}
-                  {!!u.text && <Text style={{ marginTop: 4 }}>{u.text}</Text>}
-                </View>
-              ))
-            ) : (
-              <Text>No hay actualizaciones.</Text>
-            )}
+        {/* Header */}
+        <View style={styles.header}>
+          <View>
+            <Text style={styles.title}>{item.titulo}</Text>
+            {/* Subtítulo muestra el estado del cierre calculado */}
+            <Text style={styles.sub}>{estadoCierre}</Text>
           </View>
-        )}
 
-        {tab === 'REP' && (
-          <View style={{ paddingVertical: 12 }}>
-            <Text style={styles.sectionTitle}>Información del reportante</Text>
-            <View style={styles.card}>
-              <Row label="Nombre" value={repNombre} />
-              <Row label="Institución" value={repInstit} />
-              <Row label="Admin" value={repIsAdmin} />
-              <Row label="Rol" value={repRol} />
-              <Row label="Teléfono" value={repTel} />
-            </View>
+          {puedeModerarse && (
+            <TouchableOpacity onPress={() => router.push({ pathname: '/incendios/crear', params: { id: String(id) } })}>
+              <Text style={styles.link}>Editar</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* KPIs arriba del todo sobre el último reporte */}
+        <View style={styles.kpisTop}>
+          <View style={styles.kpiBox}>
+            <Text style={styles.kpiTop}>Departamento</Text>
+            <Text style={styles.kpiBottom}>{repDepto}</Text>
           </View>
-        )}
-
-        {tab === 'INFO' && (
-          <View style={{ paddingVertical: 12 }}>
-            <Text style={styles.sectionTitle}>Información básica</Text>
-            <View style={styles.card}>
-              {infoBasico.map((row) => (
-                <View key={row.id} style={{ marginBottom: 8 }}>
-                  <Text style={{ color: '#666' }}>{row.title}</Text>
-                  <Text style={{ fontWeight: 'bold' }}>{row.text}</Text>
-                </View>
-              ))}
-            </View>
-
-            <View style={{ marginTop: 16 }}>
-              <Text style={styles.sectionTitle}>Cierre</Text>
-              {renderCierre()}
-            </View>
+          <View style={styles.kpiBox}>
+            <Text style={styles.kpiTop}>Municipio</Text>
+            <Text style={styles.kpiBottom}>{repMuni}</Text>
           </View>
+          <View style={styles.kpiBox}>
+            <Text style={styles.kpiTop}>Reportado en</Text>
+            <Text style={styles.kpiBottom}>{repFecha}</Text>
+          </View>
+          <View style={styles.kpiBox}>
+            <Text style={styles.kpiTop}>Medio</Text>
+            <Text style={styles.kpiBottom}>{repMedio}</Text>
+          </View>
+        </View>
+
+        {/* Estado/Aprobado */}
+        <View style={styles.kpis}>
+          <View style={styles.kpi}>
+            <Text style={styles.kpiTop}>Estado</Text>
+            {/* KPI de estado también usa el estado calculado */}
+            <Text style={styles.kpiBottom}>{estadoCierre}</Text>
+          </View>
+          <View style={styles.kpi}>
+            <Text style={styles.kpiTop}>Aprobado</Text>
+            <Text style={styles.kpiBottom}>{isAprobado ? 'Sí' : 'No'}</Text>
+          </View>
+        </View>
+
+        <Text style={styles.meta}>
+          Creado por {[((item as any)?.creado_por?.nombre || (item as any)?.creadoPor?.nombre), ((item as any)?.creado_por?.apellido || (item as any)?.creadoPor?.apellido)]
+            .filter(Boolean).join(' ') || '—'}
+          {(item as any).creadoEn || (item as any).creado_en ? ` • ${new Date(((item as any).creadoEn || (item as any).creado_en)).toLocaleString()}` : ''}
+        </Text>
+
+        {/* Acciones principales */}
+        {(!isAprobado && puedeModerarse) ? (
+          <View style={{ flexDirection: 'row', gap: 10 }}>
+            <Button
+              mode="contained"
+              style={[styles.mainBtn, { backgroundColor: '#2E7D32' }]}
+              onPress={async () => {
+                try { await aprobarIncendio(String(id)); await refetch(); showToast({ type: 'success', message: 'Incendio aprobado' }); }
+                catch { Alert.alert('Error', 'No se pudo aprobar'); }
+              }}
+            >Aprobar</Button>
+            <Button
+              mode="contained"
+              style={[styles.mainBtn, { backgroundColor: '#C62828' }]}
+              onPress={async () => {
+                try { await rechazarIncendio(String(id), 'Revisión: no aprobado'); await refetch(); showToast({ type: 'info', message: 'Incendio rechazado' }); }
+                catch { Alert.alert('Error', 'No se pudo rechazar'); }
+              }}
+            >Rechazar</Button>
+          </View>
+        ) : (
+          <Button mode="contained" style={[styles.mainBtn, { backgroundColor: '#00B894' }]} onPress={onShare}>
+            Compartir incidencia
+          </Button>
         )}
-      </View>
-    </ScrollView>
+
+        {/* Tabs centradas */}
+        <View style={styles.tabsWrap}>
+          <View style={styles.tabsCentered}>
+            <TouchableOpacity onPress={() => setTab('ACT')}>
+              <Text style={[styles.tab, tab === 'ACT' && styles.tabSel]}>Actualizaciones</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setTab('REP')}>
+              <Text style={[styles.tab, tab === 'REP' && styles.tabSel]}>Reportante</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setTab('INFO')}>
+              <Text style={[styles.tab, tab === 'INFO' && styles.tabSel]}>Información</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+        <Divider />
+
+        {/* Contenido tabs */}
+        <View style={{ paddingHorizontal: 4 }}>
+          {tab === 'ACT' && (
+            <View style={{ paddingVertical: 12 }}>
+              <Text style={styles.sectionTitle}>Historial / Reportes</Text>
+              {updates.length ? (
+                updates.map((u) => (
+                  <View key={u.id} style={styles.card}>
+                    <Text style={{ fontWeight: 'bold' }}>{u.title}</Text>
+                    {u.date ? <Text style={{ color: '#666' }}>{u.date}</Text> : null}
+                    {!!u.text && <Text style={{ marginTop: 4 }}>{u.text}</Text>}
+                  </View>
+                ))
+              ) : (
+                <Text>No hay actualizaciones.</Text>
+              )}
+            </View>
+          )}
+
+          {tab === 'REP' && (
+            <View style={{ paddingVertical: 12 }}>
+              <Text style={styles.sectionTitle}>Información del reportante</Text>
+              <View style={styles.card}>
+                <Row label="Nombre" value={repNombre} />
+                <Row label="Institución" value={repInstit} />
+                <Row label="Admin" value={repIsAdmin} />
+                <Row label="Rol" value={repRol} />
+                <Row label="Teléfono" value={repTel} />
+              </View>
+            </View>
+          )}
+
+          {tab === 'INFO' && (
+            <View style={{ paddingVertical: 12 }}>
+              <Text style={styles.sectionTitle}>Información básica</Text>
+              <View style={styles.card}>
+                {infoBasico.map((row) => (
+                  <View key={row.id} style={{ marginBottom: 8 }}>
+                    <Text style={{ color: '#666' }}>{row.title}</Text>
+                    <Text style={{ fontWeight: 'bold' }}>{row.text}</Text>
+                  </View>
+                ))}
+              </View>
+
+              <View style={{ marginTop: 16 }}>
+                <Text style={styles.sectionTitle}>Cierre</Text>
+                {renderCierre()}
+              </View>
+            </View>
+          )}
+        </View>
+      </ScrollView>
+
+      {/* 👇 Modal editor de cierre */}
+      <CierreEditor
+        visible={editorVisible}
+        incendioId={String(id)}
+        onClose={() => setEditorVisible(false)}
+        onSaved={async () => {
+          setEditorVisible(false);
+          await refetch();
+          showToast({ type: 'success', message: 'Cierre actualizado' });
+        }}
+      />
+    </>
   );
 }
 
