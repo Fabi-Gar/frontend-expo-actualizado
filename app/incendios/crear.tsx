@@ -1,13 +1,29 @@
 // app/incendios/crear.tsx
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, Alert, Image } from 'react-native';
-import { Appbar, TextInput, Button, Text, HelperText, ActivityIndicator } from 'react-native-paper';
+import {
+  View,
+  StyleSheet,
+  Alert,
+  Image,
+  Keyboard,
+  TouchableWithoutFeedback,
+  Platform,
+} from 'react-native';
+import {
+  Appbar,
+  TextInput,
+  Button,
+  Text,
+  HelperText,
+  ActivityIndicator,
+} from 'react-native-paper';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Yup from 'yup';
 import { Formik, FormikProps } from 'formik';
 import NetInfo from '@react-native-community/netinfo';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 
 import { getCurrentCoords } from '@/hooks/location';
 import MapPickerModal from '@/components/MapPickerModal';
@@ -68,7 +84,11 @@ export default function CrearIncendioConReporte() {
   const [muniModal, setMuniModal] = useState(false);
 
   // Foto opcional
-  const [pickedImage, setPickedImage] = useState<{ uri: string; fileName?: string | null; mimeType?: string | null } | null>(null);
+  const [pickedImage, setPickedImage] = useState<{
+    uri: string;
+    fileName?: string | null;
+    mimeType?: string | null;
+  } | null>(null);
   const [uploadPct, setUploadPct] = useState(0);
 
   // Seed inicial
@@ -77,6 +97,13 @@ export default function CrearIncendioConReporte() {
   // Evitar doble carga en dev (StrictMode/Expo)
   const didInitRef = useRef(false);
 
+  // ===== Refs para navegación entre inputs =====
+  const descRef = useRef<any>(null);
+  const telRef = useRef<any>(null);
+  const obsRef = useRef<any>(null);
+  const lugarRef = useRef<any>(null);
+  const fincaRef = useRef<any>(null);
+
   // ===== Helpers de error (amigable + log técnico) =====
   const reportError = useCallback((err: unknown, fallback = 'Ocurrió un error') => {
     const e: any = err || {};
@@ -84,7 +111,6 @@ export default function CrearIncendioConReporte() {
     const retryAfter = e?.response?.headers?.['retry-after'];
     const url = e?.config?.url;
 
-    // Log detallado a consola (para depurar)
     console.error('[CREAR][ERROR]', {
       status,
       url,
@@ -127,7 +153,7 @@ export default function CrearIncendioConReporte() {
       const result = await ImagePicker.launchImageLibraryAsync({
         allowsMultipleSelection: false,
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 1, // original; comprimimos después
+        quality: 1,
         exif: false,
       });
       if (result.canceled) return;
@@ -271,7 +297,6 @@ export default function CrearIncendioConReporte() {
         return;
       }
 
-      // Payload plano para /incendios/with-reporte
       const payload = {
         titulo: values.titulo.trim(),
         descripcion: values.descripcion?.trim() || null,
@@ -289,13 +314,11 @@ export default function CrearIncendioConReporte() {
         },
       };
 
-      // → ahora el servicio retorna { incendio, reporte_uuid }
       const { incendio, reporte_uuid } = await createIncendioWithReporte(payload);
 
       // Si hay foto seleccionada, comprimirla y subirla
       if (reporte_uuid && pickedImage?.uri) {
         try {
-          // Comprimir/redimensionar (máx 1600px de ancho, JPEG 0.8)
           const manipulated = await ImageManipulator.manipulateAsync(
             pickedImage.uri,
             [{ resize: { width: 1600 } }],
@@ -310,7 +333,7 @@ export default function CrearIncendioConReporte() {
               name: pickedImage.fileName || `foto_${Date.now()}.jpg`,
               type: 'image/jpeg',
             },
-            undefined, // crédito opcional: pásalo aquí si lo agregas al form
+            undefined,
             (pct) => setUploadPct(pct)
           );
         } catch (e) {
@@ -338,271 +361,301 @@ export default function CrearIncendioConReporte() {
         <Appbar.Content title="Nuevo incendio" />
       </Appbar.Header>
 
-      <ScrollView contentContainerStyle={styles.container}>
-        <Formik<FormValues>
-          initialValues={seed}
-          validationSchema={schema}
-          onSubmit={handleSubmitCreate}
-          validateOnChange
-          validateOnBlur
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+        <KeyboardAwareScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={styles.container}
+          keyboardShouldPersistTaps="handled"
+          enableOnAndroid
+          enableAutomaticScroll
+          extraScrollHeight={Platform.select({ ios: 24, android: 56 })} // empuje adicional
+          keyboardOpeningTime={0}
         >
-          {(formik: FormikProps<FormValues>) => {
-            const {
-              handleChange,
-              handleBlur,
-              handleSubmit,
-              values,
-              errors,
-              touched,
-              setFieldValue,
-            } = formik;
+          <Formik<FormValues>
+            initialValues={seed}
+            validationSchema={schema}
+            onSubmit={handleSubmitCreate}
+            validateOnChange
+            validateOnBlur
+          >
+            {(formik: FormikProps<FormValues>) => {
+              const {
+                handleChange,
+                handleBlur,
+                handleSubmit,
+                values,
+                errors,
+                touched,
+                setFieldValue,
+              } = formik;
 
-            const hasCoords = !!(values.lat?.trim?.() && values.lng?.trim?.());
+              const hasCoords = !!(values.lat?.trim?.() && values.lng?.trim?.());
 
-            return (
-              <View>
-                {/* Incendio */}
-                <TextInput
-                  label="Título"
-                  value={values.titulo}
-                  onChangeText={handleChange('titulo')}
-                  onBlur={handleBlur('titulo')}
-                  style={styles.input}
-                  error={!!(touched.titulo && errors.titulo)}
-                />
-                <HelperText type="error" visible={!!(touched.titulo && errors.titulo)}>
-                  {errors.titulo as any}
-                </HelperText>
+              return (
+                <View>
+                  {/* Incendio */}
+                  <TextInput
+                    label="Título"
+                    value={values.titulo}
+                    onChangeText={handleChange('titulo')}
+                    onBlur={handleBlur('titulo')}
+                    style={styles.input}
+                    error={!!(touched.titulo && errors.titulo)}
+                    returnKeyType="next"
+                    onSubmitEditing={() => descRef.current?.focus()}
+                  />
+                  <HelperText type="error" visible={!!(touched.titulo && errors.titulo)}>
+                    {errors.titulo as any}
+                  </HelperText>
 
-                <TextInput
-                  label="Descripción"
-                  value={values.descripcion}
-                  onChangeText={handleChange('descripcion')}
-                  onBlur={handleBlur('descripcion')}
-                  style={styles.input}
-                  multiline
-                />
+                  <TextInput
+                    ref={descRef}
+                    label="Descripción"
+                    value={values.descripcion}
+                    onChangeText={handleChange('descripcion')}
+                    onBlur={handleBlur('descripcion')}
+                    style={styles.input}
+                    multiline
+                    returnKeyType="next"
+                    blurOnSubmit
+                    onSubmitEditing={Keyboard.dismiss}
+                  />
 
-                {/* Ubicación */}
-                <TextInput
-                  label="Ubicación"
-                  value={
-                    hasCoords
-                      ? `${Number(values.lat).toFixed(6)}, ${Number(values.lng).toFixed(6)}`
-                      : ''
-                  }
-                  editable={false}
-                  right={<TextInput.Icon icon="map" onPress={() => setMapModal(true)} />}
-                  style={styles.input}
-                  placeholder="Toca el icono de mapa para elegir"
-                  error={!!errors.lat || !!errors.lng}
-                />
-                <HelperText type="error" visible={!!errors.lat || !!errors.lng}>
-                  {(errors.lat as any) || (errors.lng as any)}
-                </HelperText>
-
-                <Button
-                  mode="outlined"
-                  onPress={async () => {
-                    try {
-                      const c = await getCurrentCoords();
-                      if (!c) {
-                        Alert.alert('Permiso', 'Ubicación no disponible');
-                        return;
-                      }
-                      await setFieldValue('lat', String(c.lat));
-                      await setFieldValue('lng', String(c.lng));
-                    } catch (e) {
-                      reportError(e, 'No se pudo obtener tu ubicación');
+                  {/* Ubicación */}
+                  <TextInput
+                    label="Ubicación"
+                    value={
+                      hasCoords
+                        ? `${Number(values.lat).toFixed(6)}, ${Number(values.lng).toFixed(6)}`
+                        : ''
                     }
-                  }}
-                  style={{ marginBottom: 8 }}
-                >
-                  Usar mi ubicación
-                </Button>
+                    editable={false}
+                    right={<TextInput.Icon icon="map" onPress={() => setMapModal(true)} />}
+                    style={styles.input}
+                    placeholder="Toca el icono de mapa para elegir"
+                    error={!!errors.lat || !!errors.lng}
+                  />
+                  <HelperText type="error" visible={!!errors.lat || !!errors.lng}>
+                    {(errors.lat as any) || (errors.lng as any)}
+                  </HelperText>
 
-                <MapPickerModal
-                  visible={mapModal}
-                  onClose={() => setMapModal(false)}
-                  onConfirm={({ lat, lng }) => {
-                    void setFieldValue('lat', String(lat));
-                    void setFieldValue('lng', String(lng));
-                    setMapModal(false);
-                  }}
-                  initial={{
-                    lat: values.lat ? Number(values.lat) : undefined,
-                    lng: values.lng ? Number(values.lng) : undefined,
-                  }}
-                />
-
-                {/* Reporte */}
-                <Text style={styles.section}>Reporte inicial</Text>
-
-                {/* Medio */}
-                <TextInput
-                  label="Medio"
-                  value={nameById(medios, values.medioId)}
-                  editable={false}
-                  right={<TextInput.Icon icon="menu-down" onPress={() => setMedioModal(true)} />}
-                  style={styles.input}
-                  error={!!(touched.medioId && errors.medioId)}
-                  placeholder="Toca para seleccionar"
-                />
-                <HelperText type="error" visible={!!(touched.medioId && errors.medioId)}>
-                  {errors.medioId as any}
-                </HelperText>
-
-                {/* Departamento */}
-                <TextInput
-                  label="Departamento"
-                  value={nameById(deptos, values.deptoId)}
-                  editable={false}
-                  right={<TextInput.Icon icon="menu-down" onPress={() => setDeptoModal(true)} />}
-                  style={styles.input}
-                  placeholder="Toca para seleccionar"
-                />
-
-                {/* Municipio */}
-                <TextInput
-                  label="Municipio"
-                  value={nameById(munis, values.muniId)}
-                  editable={false}
-                  right={
-                    <TextInput.Icon
-                      icon="menu-down"
-                      onPress={() => {
-                        if (!values.deptoId) {
-                          Alert.alert('Atención', 'Primero elige un departamento');
-                          return;
-                        }
-                        setMuniModal(true);
-                      }}
-                    />
-                  }
-                  style={styles.input}
-                  placeholder="Toca para seleccionar"
-                />
-
-                <TextInput
-                  label="Teléfono (opcional)"
-                  value={values.telefono}
-                  onChangeText={handleChange('telefono')}
-                  onBlur={handleBlur('telefono')}
-                  style={styles.input}
-                  keyboardType="phone-pad"
-                />
-
-                <TextInput
-                  label="Observaciones (opcional)"
-                  value={values.observaciones}
-                  onChangeText={handleChange('observaciones')}
-                  onBlur={handleBlur('observaciones')}
-                  style={styles.input}
-                  multiline
-                />
-
-                <TextInput
-                  label="Lugar poblado (opcional)"
-                  value={values.lugarPoblado}
-                  onChangeText={handleChange('lugarPoblado')}
-                  onBlur={handleBlur('lugarPoblado')}
-                  style={styles.input}
-                />
-
-                <TextInput
-                  label="Finca (opcional)"
-                  value={values.finca}
-                  onChangeText={handleChange('finca')}
-                  onBlur={handleBlur('finca')}
-                  style={styles.input}
-                />
-
-                {/* Foto opcional */}
-                <Text style={styles.section}>Foto del reporte (opcional)</Text>
-                {pickedImage?.uri ? (
-                  <View style={{ marginBottom: 8 }}>
-                    <Image
-                      source={{ uri: pickedImage.uri }}
-                      style={{ width: '100%', height: 180, borderRadius: 8, backgroundColor: '#eee' }}
-                      resizeMode="cover"
-                    />
-                    <Button mode="text" onPress={() => setPickedImage(null)} style={{ marginTop: 4 }}>
-                      Quitar foto
-                    </Button>
-                  </View>
-                ) : (
-                  <Button mode="outlined" icon="image-plus" onPress={pickImage} style={{ marginBottom: 8 }}>
-                    Elegir imagen
-                  </Button>
-                )}
-                {uploadPct > 0 && uploadPct < 1 ? (
-                  <Text>Subiendo foto… {Math.round(uploadPct * 100)}%</Text>
-                ) : null}
-
-                {/* Acciones */}
-                <View style={styles.actions}>
                   <Button
                     mode="outlined"
-                    onPress={() => router.replace('/mapa')}
-                    disabled={loading}
-                    style={styles.btnCancel}
+                    onPress={async () => {
+                      try {
+                        const c = await getCurrentCoords();
+                        if (!c) {
+                          Alert.alert('Permiso', 'Ubicación no disponible');
+                          return;
+                        }
+                        await setFieldValue('lat', String(c.lat));
+                        await setFieldValue('lng', String(c.lng));
+                      } catch (e) {
+                        reportError(e, 'No se pudo obtener tu ubicación');
+                      }
+                    }}
+                    style={{ marginBottom: 8 }}
                   >
-                    Cancelar
+                    Usar mi ubicación
                   </Button>
 
-                  <Button
-                    mode="contained"
-                    onPress={() => handleSubmit()}
-                    loading={loading}
-                    disabled={loading}
-                    style={styles.btnSave}
-                  >
-                    Guardar
-                  </Button>
+                  <MapPickerModal
+                    visible={mapModal}
+                    onClose={() => setMapModal(false)}
+                    onConfirm={({ lat, lng }) => {
+                      void setFieldValue('lat', String(lat));
+                      void setFieldValue('lng', String(lng));
+                      setMapModal(false);
+                    }}
+                    initial={{
+                      lat: values.lat ? Number(values.lat) : undefined,
+                      lng: values.lng ? Number(values.lng) : undefined,
+                    }}
+                  />
+
+                  {/* Reporte */}
+                  <Text style={styles.section}>Reporte inicial</Text>
+
+                  {/* Medio */}
+                  <TextInput
+                    label="Medio"
+                    value={nameById(medios, values.medioId)}
+                    editable={false}
+                    right={<TextInput.Icon icon="menu-down" onPress={() => setMedioModal(true)} />}
+                    style={styles.input}
+                    error={!!(touched.medioId && errors.medioId)}
+                    placeholder="Toca para seleccionar"
+                  />
+                  <HelperText type="error" visible={!!(touched.medioId && errors.medioId)}>
+                    {errors.medioId as any}
+                  </HelperText>
+
+                  {/* Departamento */}
+                  <TextInput
+                    label="Departamento"
+                    value={nameById(deptos, values.deptoId)}
+                    editable={false}
+                    right={<TextInput.Icon icon="menu-down" onPress={() => setDeptoModal(true)} />}
+                    style={styles.input}
+                    placeholder="Toca para seleccionar"
+                  />
+
+                  {/* Municipio */}
+                  <TextInput
+                    label="Municipio"
+                    value={nameById(munis, values.muniId)}
+                    editable={false}
+                    right={
+                      <TextInput.Icon
+                        icon="menu-down"
+                        onPress={() => {
+                          if (!values.deptoId) {
+                            Alert.alert('Atención', 'Primero elige un departamento');
+                            return;
+                          }
+                          setMuniModal(true);
+                        }}
+                      />
+                    }
+                    style={styles.input}
+                    placeholder="Toca para seleccionar"
+                  />
+
+                  <TextInput
+                    ref={telRef}
+                    label="Teléfono (opcional)"
+                    value={values.telefono}
+                    onChangeText={handleChange('telefono')}
+                    onBlur={handleBlur('telefono')}
+                    style={styles.input}
+                    keyboardType="phone-pad"
+                    returnKeyType="next"
+                    textContentType="telephoneNumber"
+                    autoComplete="tel"
+                    onSubmitEditing={() => obsRef.current?.focus()}
+                  />
+
+                  <TextInput
+                    ref={obsRef}
+                    label="Observaciones (opcional)"
+                    value={values.observaciones}
+                    onChangeText={handleChange('observaciones')}
+                    onBlur={handleBlur('observaciones')}
+                    style={styles.input}
+                    multiline
+                    returnKeyType="next"
+                    blurOnSubmit
+                    onSubmitEditing={() => lugarRef.current?.focus()}
+                  />
+
+                  <TextInput
+                    ref={lugarRef}
+                    label="Lugar poblado (opcional)"
+                    value={values.lugarPoblado}
+                    onChangeText={handleChange('lugarPoblado')}
+                    onBlur={handleBlur('lugarPoblado')}
+                    style={styles.input}
+                    returnKeyType="next"
+                    onSubmitEditing={() => fincaRef.current?.focus()}
+                  />
+
+                  <TextInput
+                    ref={fincaRef}
+                    label="Finca (opcional)"
+                    value={values.finca}
+                    onChangeText={handleChange('finca')}
+                    onBlur={handleBlur('finca')}
+                    style={styles.input}
+                    returnKeyType="done"
+                    onSubmitEditing={() => handleSubmit()}
+                  />
+
+                  {/* Foto opcional */}
+                  <Text style={styles.section}>Foto del reporte (opcional)</Text>
+                  {pickedImage?.uri ? (
+                    <View style={{ marginBottom: 8 }}>
+                      <Image
+                        source={{ uri: pickedImage.uri }}
+                        style={{ width: '100%', height: 180, borderRadius: 8, backgroundColor: '#eee' }}
+                        resizeMode="cover"
+                      />
+                      <Button mode="text" onPress={() => setPickedImage(null)} style={{ marginTop: 4 }}>
+                        Quitar foto
+                      </Button>
+                    </View>
+                  ) : (
+                    <Button mode="outlined" icon="image-plus" onPress={pickImage} style={{ marginBottom: 8 }}>
+                      Elegir imagen
+                    </Button>
+                  )}
+                  {uploadPct > 0 && uploadPct < 1 ? (
+                    <Text>Subiendo foto… {Math.round(uploadPct * 100)}%</Text>
+                  ) : null}
+
+                  {/* Acciones */}
+                  <View style={styles.actions}>
+                    <Button
+                      mode="outlined"
+                      onPress={() => router.replace('/mapa')}
+                      disabled={loading}
+                      style={styles.btnCancel}
+                    >
+                      Cancelar
+                    </Button>
+
+                    <Button
+                      mode="contained"
+                      onPress={() => handleSubmit()}
+                      loading={loading}
+                      disabled={loading}
+                      style={styles.btnSave}
+                    >
+                      Guardar
+                    </Button>
+                  </View>
+
+                  {/* Modales selectores */}
+                  <SingleSelectModal
+                    visible={medioModal}
+                    title="Selecciona medio"
+                    options={medios}
+                    value={values.medioId}
+                    onSelect={(id) => {
+                      void setFieldValue('medioId', (id as string) ?? null);
+                    }}
+                    onClose={() => setMedioModal(false)}
+                    allowClear={false}
+                  />
+
+                  <SingleSelectModal
+                    visible={deptoModal}
+                    title="Selecciona departamento"
+                    options={deptos}
+                    value={values.deptoId}
+                    onSelect={async (id) => {
+                      void setFieldValue('deptoId', (id as string) ?? null);
+                      void setFieldValue('muniId', null);
+                      await loadMunicipios(id as string);
+                    }}
+                    onClose={() => setDeptoModal(false)}
+                    allowClear
+                  />
+
+                  <SingleSelectModal
+                    visible={muniModal}
+                    title="Selecciona municipio"
+                    options={munis}
+                    value={values.muniId}
+                    onSelect={(id) => void setFieldValue('muniId', (id as string) ?? null)}
+                    onClose={() => setMuniModal(false)}
+                    allowClear
+                  />
                 </View>
-
-                {/* Modales selectores */}
-                <SingleSelectModal
-                  visible={medioModal}
-                  title="Selecciona medio"
-                  options={medios}
-                  value={values.medioId}
-                  onSelect={(id) => {
-                    void setFieldValue('medioId', (id as string) ?? null);
-                  }}
-                  onClose={() => setMedioModal(false)}
-                  allowClear={false}
-                />
-
-                <SingleSelectModal
-                  visible={deptoModal}
-                  title="Selecciona departamento"
-                  options={deptos}
-                  value={values.deptoId}
-                  onSelect={async (id) => {
-                    void setFieldValue('deptoId', (id as string) ?? null);
-                    // reset municipio y cargar
-                    void setFieldValue('muniId', null);
-                    await loadMunicipios(id as string);
-                  }}
-                  onClose={() => setDeptoModal(false)}
-                  allowClear
-                />
-
-                <SingleSelectModal
-                  visible={muniModal}
-                  title="Selecciona municipio"
-                  options={munis}
-                  value={values.muniId}
-                  onSelect={(id) => void setFieldValue('muniId', (id as string) ?? null)}
-                  onClose={() => setMuniModal(false)}
-                  allowClear
-                />
-              </View>
-            );
-          }}
-        </Formik>
-      </ScrollView>
+              );
+            }}
+          </Formik>
+        </KeyboardAwareScrollView>
+      </TouchableWithoutFeedback>
     </View>
   );
 }

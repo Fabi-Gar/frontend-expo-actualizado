@@ -1,7 +1,7 @@
 // app/admin/usuarios.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  View, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Alert,
+  View, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Alert, ScrollView,
 } from 'react-native';
 import {
   Appbar, TextInput, Text, ActivityIndicator, Portal, Modal, Button, Switch, Menu,
@@ -9,7 +9,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 
-import { listRoles, Rol as Role } from '../../services/catalogos';
+import { listRoles, Rol as Role, listInstituciones, Institucion } from '../../services/catalogos';
 import {
   listUsers,
   createUser,
@@ -18,7 +18,6 @@ import {
   UserAccount,
 } from '../../services/usuarios';
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 type UsersPaged = {
   items: UserAccount[];
   page: number;
@@ -29,17 +28,17 @@ type UsersPaged = {
 export default function UsuariosIndex() {
   const [items, setItems] = useState<UserAccount[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
+  const [instituciones, setInstituciones] = useState<Institucion[]>([]);
   const [q, setQ] = useState('');
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Paginación (backend tiene page/pageSize)
+  // Paginación
   const [page, setPage] = useState(1);
   const [pageSize] = useState(20);
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
 
-  // (Opcional) menú de acciones futuras
   const [menuVisible, setMenuVisible] = useState(false);
 
   // Modal
@@ -54,7 +53,6 @@ export default function UsuariosIndex() {
   const [formInstitucionId, setFormInstitucionId] = useState<string | null>(null);
   const [formIsAdmin, setFormIsAdmin] = useState<boolean>(false);
 
-  // Debounce búsqueda (300ms)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const schedule = (fn: () => void) => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -64,13 +62,17 @@ export default function UsuariosIndex() {
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const resp = await listUsers({ page: 1, pageSize });
+
+      const resp: UsersPaged = await listUsers({ page: 1, pageSize });
       setItems(resp.items || []);
       setHasMore((resp.page * resp.pageSize) < (resp.total ?? 0));
       setPage(1);
 
       const rs = await listRoles(1, 100);
       setRoles(rs.items || []);
+
+      const inst = await listInstituciones({ page: 1, pageSize: 50, q: '' });
+      setInstituciones(inst.items || []);
     } catch (e: any) {
       Alert.alert('Error', e?.response?.data?.message || 'No se pudieron cargar usuarios');
     } finally {
@@ -83,7 +85,7 @@ export default function UsuariosIndex() {
     try {
       setLoadingMore(true);
       const next = page + 1;
-      const resp = await listUsers({ page: next, pageSize });
+      const resp: UsersPaged = await listUsers({ page: next, pageSize });
       setItems(prev => [...prev, ...(resp.items || [])]);
       setHasMore((resp.page * resp.pageSize) < (resp.total ?? 0));
       setPage(next);
@@ -103,7 +105,6 @@ export default function UsuariosIndex() {
 
   useEffect(() => { schedule(load); }, [load]);
 
-  // Búsqueda en cliente (filtro por nombre/correo/rol)
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
     if (!s) return items;
@@ -111,7 +112,7 @@ export default function UsuariosIndex() {
       const bag = [
         u.nombre || '',
         u.apellido || '',
-        u.correo || '',
+        (u as any).correo || (u as any).email || '',
         u.rol?.nombre || '',
         u.institucion?.nombre || '',
       ].join(' ').toLowerCase();
@@ -119,7 +120,6 @@ export default function UsuariosIndex() {
     });
   }, [items, q]);
 
-  // --- Crear / Editar ---
   const openCreate = () => {
     setEditing(null);
     setFormNombre('');
@@ -137,12 +137,12 @@ export default function UsuariosIndex() {
     setEditing(u);
     setFormNombre(u.nombre || '');
     setFormApellido(u.apellido || '');
-    setFormCorreo(u.correo || '');
-    setFormTelefono(u.telefono || '');
+    setFormCorreo(((u as any).correo || (u as any).email || '') as string);
+    setFormTelefono((u.telefono as any) || '');
     setFormPassword('');
-    setFormRolId(u.rol?.id || null);
-    setFormInstitucionId(u.institucion?.id || null);
-    setFormIsAdmin(!!u.isAdmin);
+    setFormRolId((u.rol as any)?.id || (u.rol as any)?.rol_uuid || null);
+    setFormInstitucionId((u.institucion as any)?.id || (u.institucion as any)?.institucion_uuid || null);
+    setFormIsAdmin(!!((u as any).isAdmin ?? (u as any).is_admin));
     setModalVisible(true);
   };
 
@@ -162,16 +162,19 @@ export default function UsuariosIndex() {
       setLoading(true);
 
       if (editing) {
-        await updateUser(editing.id, {
-          nombre,
-          apellido,
-          email: correo,
-          telefono: telefono ?? null,
-          newPassword: password || undefined,
-          rolId: formRolId || undefined,
-          institucionId: formInstitucionId === null ? null : formInstitucionId || undefined,
-          isAdmin: formIsAdmin,
-        });
+        await updateUser(
+          ((editing as any).id || (editing as any).usuario_uuid) as string,
+          {
+            nombre,
+            apellido,
+            email: correo,
+            telefono: telefono ?? null,
+            newPassword: password || undefined,
+            rolId: formRolId || undefined,
+            institucionId: formInstitucionId === null ? null : (formInstitucionId || undefined),
+            isAdmin: formIsAdmin,
+          }
+        );
       } else {
         if (!password) {
           Alert.alert('Validación', 'La contraseña es obligatoria para crear');
@@ -205,11 +208,10 @@ export default function UsuariosIndex() {
     }
   };
 
-  // --- Eliminar (soft) ---
   const askDelete = (u: UserAccount) => {
     Alert.alert('Eliminar', `¿Eliminar el usuario "${u.nombre} ${u.apellido}"?`, [
       { text: 'Cancelar', style: 'cancel' },
-      { text: 'Eliminar', style: 'destructive', onPress: () => doDelete(u.id) },
+      { text: 'Eliminar', style: 'destructive', onPress: () => doDelete(((u as any).id || (u as any).usuario_uuid) as string) },
     ]);
   };
 
@@ -229,17 +231,12 @@ export default function UsuariosIndex() {
         <Appbar.BackAction onPress={() => router.back()} />
         <Appbar.Content title="Usuarios (Admin)" />
 
-        {/* Menú reservado por si luego agregas filtros server-side */}
         <Menu
           visible={menuVisible}
           onDismiss={() => setMenuVisible(false)}
           anchor={<Appbar.Action icon="filter-variant" onPress={() => setMenuVisible(true)} />}
         >
-          <Menu.Item
-            onPress={() => { setMenuVisible(false); }}
-            title="Sin filtros"
-            leadingIcon="check"
-          />
+          <Menu.Item onPress={() => setMenuVisible(false)} title="Sin filtros" leadingIcon="check" />
         </Menu>
 
         <Appbar.Action icon="plus" onPress={openCreate} />
@@ -260,7 +257,7 @@ export default function UsuariosIndex() {
       ) : (
         <FlatList
           data={filtered}
-          keyExtractor={(x) => String(x.id)}
+          keyExtractor={(x) => String((x as any).id || (x as any).usuario_uuid)}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
           ItemSeparatorComponent={() => <View style={styles.sep} />}
           renderItem={({ item }) => (
@@ -268,9 +265,11 @@ export default function UsuariosIndex() {
               <View style={styles.row}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.rowTitle}>{item.nombre} {item.apellido}</Text>
-                  <Text>{item.correo}</Text>
+                  <Text>{(item as any).correo || (item as any).email}</Text>
                   <Text style={styles.metaText}>
-                    {item.rol?.nombre ?? 'Sin rol'}{item.isAdmin ? ' · Admin' : ''}{item.institucion?.nombre ? ` · ${item.institucion.nombre}` : ''}
+                    {item.rol?.nombre ?? 'Sin rol'}
+                    {((item as any).isAdmin || (item as any).is_admin) ? ' · Admin' : ''}
+                    {item.institucion?.nombre ? ` · ${item.institucion.nombre}` : ''}
                   </Text>
                 </View>
                 <TouchableOpacity onPress={() => askDelete(item)}>
@@ -281,62 +280,71 @@ export default function UsuariosIndex() {
           )}
           onEndReachedThreshold={0.4}
           onEndReached={loadMore}
-          ListFooterComponent={
-            loadingMore ? (
-              <View style={{ paddingVertical: 12 }}>
-                <ActivityIndicator />
-              </View>
-            ) : null
-          }
-          initialNumToRender={12}
-          maxToRenderPerBatch={12}
-          windowSize={7}
-          removeClippedSubviews
+          ListFooterComponent={loadingMore ? <View style={{ paddingVertical: 12 }}><ActivityIndicator /></View> : null}
           contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 24 }}
           ListEmptyComponent={<View style={styles.center}><Text>No hay usuarios</Text></View>}
         />
       )}
 
-      {/* Modal crear/editar */}
+      {/* Modal con Scroll */}
       <Portal>
-        <Modal visible={modalVisible} onDismiss={() => setModalVisible(false)} contentContainerStyle={styles.modalCard}>
-          <Text style={styles.modalTitle}>{editing ? 'Editar usuario' : 'Nuevo usuario'}</Text>
+        <Modal
+          visible={modalVisible}
+          onDismiss={() => setModalVisible(false)}
+          contentContainerStyle={[styles.modalCard, { maxHeight: '90%' }]}
+        >
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }}>
+            <Text style={styles.modalTitle}>{editing ? 'Editar usuario' : 'Nuevo usuario'}</Text>
 
-          <TextInput label="Nombre" value={formNombre} onChangeText={setFormNombre} style={styles.input} />
-          <TextInput label="Apellido" value={formApellido} onChangeText={setFormApellido} style={styles.input} />
-          <TextInput label="Correo" value={formCorreo} onChangeText={setFormCorreo} autoCapitalize="none" keyboardType="email-address" style={styles.input} />
-          <TextInput label="Teléfono (opcional)" value={formTelefono} onChangeText={setFormTelefono} keyboardType="phone-pad" style={styles.input} />
+            <TextInput label="Nombre" value={formNombre} onChangeText={setFormNombre} style={styles.input} />
+            <TextInput label="Apellido" value={formApellido} onChangeText={setFormApellido} style={styles.input} />
+            <TextInput label="Correo" value={formCorreo} onChangeText={setFormCorreo} autoCapitalize="none" keyboardType="email-address" style={styles.input} />
+            <TextInput label="Teléfono (opcional)" value={formTelefono} onChangeText={setFormTelefono} keyboardType="phone-pad" style={styles.input} />
 
-          <TextInput
-            label={editing ? 'Nueva contraseña (opcional)' : 'Contraseña'}
-            value={formPassword}
-            onChangeText={setFormPassword}
-            secureTextEntry
-            style={styles.input}
-            placeholder={editing ? 'Dejar vacío para no cambiar' : undefined}
-          />
+            <TextInput
+              label={editing ? 'Nueva contraseña (opcional)' : 'Contraseña'}
+              value={formPassword}
+              onChangeText={setFormPassword}
+              secureTextEntry
+              style={styles.input}
+              placeholder={editing ? 'Dejar vacío para no cambiar' : undefined}
+            />
 
-          <Text style={{ marginTop: 8, marginBottom: 4 }}>Rol:</Text>
-          {/* Sin rol no está soportado en create (backend requiere rol_uuid). Para editar, puedes dejarlo igual */}
-          {roles.map(r => (
-            <TouchableOpacity key={r.id} style={styles.rolOption} onPress={() => setFormRolId(r.id)}>
-              <Ionicons
-                name={formRolId === r.id ? 'radio-button-on' : 'radio-button-off'}
-                size={20}
-              />
-              <Text style={{ marginLeft: 6 }}>{r.nombre}</Text>
+            <Text style={{ marginTop: 8, marginBottom: 4 }}>Rol:</Text>
+            {roles.map(r => {
+              const rid = (r as any).id ?? (r as any).rol_uuid;
+              return (
+                <TouchableOpacity key={rid} style={styles.rolOption} onPress={() => setFormRolId(rid as string)}>
+                  <Ionicons name={formRolId === rid ? 'radio-button-on' : 'radio-button-off'} size={20} />
+                  <Text style={{ marginLeft: 6 }}>{r.nombre}</Text>
+                </TouchableOpacity>
+              );
+            })}
+
+            <Text style={{ marginTop: 12, marginBottom: 4 }}>Institución:</Text>
+
+            <TouchableOpacity style={styles.rolOption} onPress={() => setFormInstitucionId(null)}>
+              <Ionicons name={formInstitucionId === null ? 'radio-button-on' : 'radio-button-off'} size={20} />
+              <Text style={{ marginLeft: 6 }}>Sin institución</Text>
             </TouchableOpacity>
-          ))}
 
-          <View style={styles.switchRow}>
-            <Text>Es administrador</Text>
-            <Switch value={formIsAdmin} onValueChange={setFormIsAdmin} />
-          </View>
+            {instituciones.map(inst => (
+              <TouchableOpacity key={inst.id} style={styles.rolOption} onPress={() => setFormInstitucionId(inst.id)}>
+                <Ionicons name={formInstitucionId === inst.id ? 'radio-button-on' : 'radio-button-off'} size={20} />
+                <Text style={{ marginLeft: 6 }}>{inst.nombre}</Text>
+              </TouchableOpacity>
+            ))}
 
-          <View style={styles.actions}>
-            <Button onPress={() => setModalVisible(false)}>Cancelar</Button>
-            <Button mode="contained" onPress={saveFromModal}>{editing ? 'Actualizar' : 'Crear'}</Button>
-          </View>
+            <View style={styles.switchRow}>
+              <Text>Es administrador</Text>
+              <Switch value={formIsAdmin} onValueChange={setFormIsAdmin} />
+            </View>
+
+            <View style={styles.actions}>
+              <Button onPress={() => setModalVisible(false)}>Cancelar</Button>
+              <Button mode="contained" onPress={saveFromModal}>{editing ? 'Actualizar' : 'Crear'}</Button>
+            </View>
+          </ScrollView>
         </Modal>
       </Portal>
     </View>

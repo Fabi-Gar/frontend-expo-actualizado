@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "410620010027",
+    "project_id": "appincendios-f747c",
+    "storage_bucket": "appincendios-f747c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:410620010027:android:4e66856435b689157c946e",
+        "android_client_info": {
+          "package_name": "com.aplicacionincendios.inab"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD6wPt3kOv7AHeCT7HT9nYgPcPgf7_e3lw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

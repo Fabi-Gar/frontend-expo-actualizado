@@ -35,17 +35,32 @@ import {
   type CatalogoItem,
 } from '@/services/catalogos';
 
+import { getUser } from '@/session';
+
 const tecnicaSlugFromNombre = (nombre?: string) => {
-  const s = (nombre || '').trim().toLowerCase();
+  const s = (nombre || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
   if (!s) return undefined;
-  if (s.includes('direct')) return 'directo';
-  if (s.includes('indirect')) return 'indirecto';
+
   if (s.includes('control') && s.includes('natural')) return 'control_natural';
+  if (s.includes('indirect')) return 'indirecto';
+  if (s.includes('direct')) return 'directo';
+
   return undefined;
 };
 
+
+type TecnicaSlug = 'directo' | 'indirecto' | 'control_natural';
+const isTecnicaSlug = (s: any): s is TecnicaSlug =>
+  s === 'directo' || s === 'indirecto' || s === 'control_natural';
+
 const tecnicaIdFromSlug = (
-  slug: 'directo' | 'indirecto' | 'control_natural',
+  slug: TecnicaSlug,
   tecnicasCat: CatalogoItem[]
 ) => {
   const item = tecnicasCat.find((t) => tecnicaSlugFromNombre(t.nombre) === slug);
@@ -249,6 +264,17 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
   const [closing, setClosing] = useState(false);
   const [estadoCierre, setEstadoCierre] = useState<EstadoCierre>('Pendiente');
 
+  // 👇 nuevo: estado admin
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => {
+    (async () => {
+      try {
+        const u = await getUser();
+        setIsAdmin(!!u?.is_admin);
+      } catch {}
+    })();
+  }, []);
+
   // Catálogos
   const [tiposIncendio, setTiposIncendio] = useState<CatalogoItem[]>([]);
   const [tiposPropiedad, setTiposPropiedad] = useState<CatalogoItem[]>([]);
@@ -261,7 +287,6 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
   const [instituciones, setInstituciones] = useState<CatalogoItem[]>([]);
   const [tecnicasCat, setTecnicasCat] = useState<CatalogoItem[]>([]);
 
-  // Carga todos los catálogos de una vez y devuelve las listas (evita depender del estado adentro de reload)
   const fetchAllCatalogs = useCallback(async () => {
     const [
       catTiposIncendio,
@@ -300,7 +325,6 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
       tecnicasCat: catTecnicas.items ?? [],
     };
 
-    // Actualiza estado (no afecta deps de reload, que usa 'cats' locales)
     setTiposIncendio(cats.tiposIncendio);
     setTiposPropiedad(cats.tiposPropiedad);
     setCausas(cats.causas);
@@ -388,15 +412,13 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
   const [dlgIniciadoOpen, setDlgIniciadoOpen] = useState(false);
   const [dlgCausaOpen, setDlgCausaOpen] = useState(false);
 
-  // Helpers
   const sumValues = (obj: Record<string, number>) =>
     Object.values(obj).reduce((acc, n) => acc + (Number.isFinite(n) ? Number(n) : 0), 0);
 
-  // Carga principal (sin loops)
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const cats = await fetchAllCatalogs(); // ← catálogos locales y en estado
+      const cats = await fetchAllCatalogs();
       const c = await getCierre(incendioId);
 
       setEstadoCierre(c.estado_cierre);
@@ -430,10 +452,9 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
 
       setSv([]);
 
-      // mapear técnicas con cats.tecnicasCat local (no dependas del estado)
       const tb: Record<string, number> = {};
       for (const t of c.tecnicas || []) {
-        const slug = (t as any).tecnica as 'directo' | 'indirecto' | 'control_natural' | undefined;
+        const slug = (t as any).tecnica as TecnicaSlug | undefined;
         if (!slug) continue;
         const id = tecnicaIdFromSlug(slug, cats.tecnicasCat);
         if (id) tb[id] = Number((t as any).pct || 0);
@@ -478,7 +499,6 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
     if (visible) reload();
   }, [visible, reload]);
 
-  // Payload
   const buildPayload = useCallback(() => {
     const payload: any = {};
 
@@ -523,18 +543,32 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
 
     if (sv.length) payload.superficie_vegetacion = sv;
 
-    // TECNICAS: id -> slug
-    const tecArr: { tecnica: 'directo' | 'indirecto' | 'control_natural'; pct: number }[] = [];
+    // === Técnicas: mapeo robusto y suma por slug ===
+    const tecBySlug: Record<TecnicaSlug, number> = {
+      directo: 0,
+      indirecto: 0,
+      control_natural: 0,
+    } as Record<TecnicaSlug, number>;
+
     for (const [id, pct0] of Object.entries(tecById)) {
       const pct = Number(pct0);
-      if (!(pct > 0)) continue;
+      if (!Number.isFinite(pct) || pct <= 0) continue;
       const nombre = tecnicasCat.find((t) => t.id === id)?.nombre;
       const slug = tecnicaSlugFromNombre(nombre);
-      if (slug === 'directo' || slug === 'indirecto' || slug === 'control_natural') {
-        tecArr.push({ tecnica: slug, pct });
+        console.log('[BUILD_PAYLOAD][TECNICA]', { id, nombre, slug, pct }); // 👈 log clave
+
+      if (isTecnicaSlug(slug)) {
+        tecBySlug[slug] = (tecBySlug[slug] || 0) + pct;
       }
     }
+
+
+    const tecArr = (Object.entries(tecBySlug) as [TecnicaSlug, number][])
+      .filter(([, pct]) => pct > 0)
+      .map(([slug, pct]) => ({ tecnica: slug, pct: Number(pct) }));
+
     if (tecArr.length) payload.tecnicas = tecArr;
+    // === /Técnicas ===
 
     const mtArr = Object.entries(medTerCant)
       .filter(([_, c]) => Number(c) > 0)
@@ -617,7 +651,6 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
     tecnicasCat
   ]);
 
-  // Validación cliente
   const validateBeforeSave = useCallback(() => {
     const sumTec = sumValues(tecById);
     if (sumTec > 100.0001) {
@@ -646,10 +679,18 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
   }, [tecById, medAerPct, compById, topoPlano, topoOndulado, topoQuebrado]);
 
   const handleSave = useCallback(async () => {
+    if (estadoCierre === 'Extinguido' && !isAdmin) {
+      Alert.alert('No permitido', 'Este cierre está extinguido. Solo un administrador puede modificarlo.');
+      return;
+    }
     try {
       if (!validateBeforeSave()) return;
       setSaving(true);
       const payload = buildPayload();
+
+      // 👇 Log para depurar lo que realmente enviamos
+      console.log('[CIERRE][PATCH] tecnicas ->', payload.tecnicas);
+
       await patchCierreCatalogos(incendioId, payload);
       onSaved?.();
     } catch (e: any) {
@@ -663,7 +704,7 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
     } finally {
       setSaving(false);
     }
-  }, [buildPayload, incendioId, onSaved, validateBeforeSave]);
+  }, [buildPayload, incendioId, onSaved, validateBeforeSave, estadoCierre, isAdmin]);
 
   const handleFinalizar = useCallback(async () => {
     try {
@@ -684,6 +725,10 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
   }, [incendioId, reload, onSaved]);
 
   const handleReabrir = useCallback(async () => {
+    if (!isAdmin) {
+      Alert.alert('No permitido', 'Solo un administrador puede reabrir un cierre extinguido.');
+      return;
+    }
     try {
       setClosing(true);
       await reabrirCierre(incendioId);
@@ -699,7 +744,7 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
     } finally {
       setClosing(false);
     }
-  }, [incendioId, reload, onSaved]);
+  }, [incendioId, reload, onSaved, isAdmin]);
 
   const tipoPrincipalNombre = useMemo(
     () => tiposIncendio.find((t) => t.id === tipoPrincipalId)?.nombre || 'Seleccionar…',
@@ -749,6 +794,10 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
     const pct = (supFuera / supTotal) * 100;
     return `${pct.toFixed(1)}%`;
   }, [supTotal, supFuera]);
+
+  const isClosed = estadoCierre === 'Extinguido';
+  const showSaveBtn = !isClosed || isAdmin;
+  const showReopenBtn = isClosed && isAdmin;
 
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
@@ -1210,29 +1259,37 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
             Cerrar
           </Button>
           <View style={{ flex: 1 }} />
-          <Button
-            mode="contained-tonal"
-            onPress={handleReabrir}
-            loading={closing && estadoCierre === 'Extinguido'}
-            disabled={saving || closing || estadoCierre !== 'Extinguido'}
-            style={{ marginRight: 8 }}
-          >
-            Reabrir
-          </Button>
-          <Button
-            mode="contained"
-            onPress={handleSave}
-            loading={saving}
-            disabled={closing || saving}
-            style={{ marginRight: 8 }}
-          >
-            Guardar
-          </Button>
+
+          {showReopenBtn && (
+            <Button
+              mode="contained-tonal"
+              onPress={handleReabrir}
+              loading={closing && isClosed}
+              disabled={saving || closing}
+              style={{ marginRight: 8 }}
+            >
+              Reabrir
+            </Button>
+          )}
+
+          {showSaveBtn && (
+            <Button
+              mode="contained"
+              onPress={handleSave}
+              loading={saving}
+              disabled={closing || saving}
+              style={{ marginRight: 8 }}
+            >
+              Guardar
+            </Button>
+          )}
+
+          {/* Finalizar: ya queda deshabilitado cuando está cerrado */}
           <Button
             mode="contained"
             onPress={handleFinalizar}
-            loading={closing && estadoCierre !== 'Extinguido'}
-            disabled={saving || closing || estadoCierre === 'Extinguido'}
+            loading={closing && !isClosed}
+            disabled={saving || closing || isClosed}
             buttonColor="#2E7D32"
             textColor="#fff"
           >

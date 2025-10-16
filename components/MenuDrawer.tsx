@@ -46,14 +46,19 @@ export const MenuDrawer = ({ animation, onClose, onNavigate, isAdmin = false }: 
     <Animated.View style={[styles.drawer, { left: animation }]}>
       <Text style={styles.title}>App incendios</Text>
 
-      <TouchableOpacity style={styles.option} onPress={() => onNavigate('Mapa')}>
+      <TouchableOpacity style={styles.option} onPress={() => onNavigate('Mi Usuario')}>
         <Ionicons name="map" size={20} color="#37474F" style={styles.icon} />
-        <Text style={styles.optionText}>Mapa</Text>
+        <Text style={styles.optionText}>Mi perfil</Text>
       </TouchableOpacity>
 
-      <TouchableOpacity style={styles.option} onPress={() => onNavigate('Ayuda')}>
+      <TouchableOpacity style={styles.option} onPress={() => onNavigate('Reportes')}>
         <Ionicons name="information-circle" size={20} color="#37474F" style={styles.icon} />
-        <Text style={styles.optionText}>Ayuda</Text>
+        <Text style={styles.optionText}>Mis reportes</Text>
+      </TouchableOpacity>
+
+            <TouchableOpacity style={styles.option} onPress={() => onNavigate('notificaciones')}>
+        <Ionicons name="information-circle" size={20} color="#37474F" style={styles.icon} />
+        <Text style={styles.optionText}>Notificaciones</Text>
       </TouchableOpacity>
 
       <Text style={styles.section}>Otras opciones</Text>

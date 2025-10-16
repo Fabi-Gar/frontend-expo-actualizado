@@ -1,6 +1,6 @@
 // app/incendios/detalles.tsx
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, Share, Alert } from 'react-native';
+import { View, StyleSheet, ScrollView, TouchableOpacity, Share, Alert, Image } from 'react-native';
 import { Text, Button, Divider } from 'react-native-paper';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -12,10 +12,20 @@ import { getUser } from '@/session';
 import { subscribe, EVENTS } from '@/hooks/events';
 import { showToast } from '@/hooks/uiStore';
 
-// 👇 nuevo
 import CierreEditor from '@/components/CierreEditor';
 
 type Tab = 'ACT' | 'REP' | 'INFO';
+
+// --- helper para portada ---
+const getCoverUrl = (it: any, ultimo?: any): string | null =>
+  it?.portadaUrl ||
+  it?.foto_portada_url ||
+  it?.thumbnailUrl ||
+  it?.fotos?.[0]?.url ||
+  ultimo?.foto_portada_url ||
+  ultimo?.thumbnailUrl ||
+  ultimo?.fotos?.[0]?.url ||
+  null;
 
 export default function DetalleIncendio() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -26,46 +36,41 @@ export default function DetalleIncendio() {
   const [user, setUser] = useState<any>(null);
   const [tab, setTab] = useState<Tab>('ACT');
   const [cierre, setCierre] = useState<any>(null);
-  const [ultimoReporte, setUltimoReporte] = useState<any | null>(null);
 
-  // 👇 estado del editor
+  const [ultimoReporte, setUltimoReporte] = useState<any | null>(null);
+  const [primerReporte, setPrimerReporte] = useState<any | null>(null);
+
   const [editorVisible, setEditorVisible] = useState(false);
 
-  // ---- carga de usuario ----
-  useEffect(() => {
-    (async () => {
-      try { setUser(await getUser()); } catch {}
-    })();
-  }, []);
+  useEffect(() => { (async () => { try { setUser(await getUser()); } catch {} })(); }, []);
 
-  // ---- helpers rol/admin ----
-  const roleId = user?.rol?.id as number | undefined;
-  const roleName = typeof user?.rol?.nombre === 'string' ? user.rol.nombre.toLowerCase() : undefined;
-  const isAdmin = roleId === 2 || (roleName?.includes('admin') ?? false);
+  const isAdmin: boolean = user?.is_admin === true;
 
   const refetch = useCallback(async () => {
     if (!id) return;
     try {
       setLoading(true);
+
       const data = await getIncendio(String(id));
       setItem(data);
 
-      // último reporte de este incendio
+      // Último reporte (visual)
       try {
-        const { data: rep } = await api.get(`/reportes?incendio_uuid=${id}&pageSize=1`);
-        const it = (rep?.items || [])[0] ?? null;
-        setUltimoReporte(it);
-      } catch {
-        setUltimoReporte(null);
-      }
+        const { data: repUlt } = await api.get(`/reportes`, { params: { incendio_uuid: id, pageSize: 1 } });
+        setUltimoReporte((repUlt?.items || [])[0] ?? null);
+      } catch { setUltimoReporte(null); }
 
-      // cierre (si existe)
+      // Primer reporte (permiso)
+      try {
+        const { data: repPrim } = await api.get(`/reportes`, { params: { incendio_uuid: id, pageSize: 1, order: 'ASC' } });
+        setPrimerReporte((repPrim?.items || [])[0] ?? null);
+      } catch { setPrimerReporte(null); }
+
+      // Cierre
       try {
         const c = await getCierre(String(id));
         setCierre(c);
-      } catch {
-        setCierre(null);
-      }
+      } catch { setCierre(null); }
     } catch (e: any) {
       showToast({ type: 'error', message: e?.response?.data?.error || 'No se pudo cargar el incendio' });
     } finally {
@@ -75,7 +80,6 @@ export default function DetalleIncendio() {
 
   useEffect(() => { refetch(); }, [refetch]);
 
-  // Estado del cierre (derivado por timestamps)
   const estadoCierre = useMemo(() => {
     const sc = cierre?.secuencia_control || {};
     if (sc?.extinguido_at) return 'Extinguido';
@@ -84,7 +88,6 @@ export default function DetalleIncendio() {
     return 'Pendiente';
   }, [cierre]);
 
-  // Suscripciones para refrescar desde otros lugares
   useEffect(() => {
     const u1 = subscribe(EVENTS.INCENDIO_UPDATED, (p) => { if (p?.id === String(id)) refetch(); });
     const u2 = subscribe(EVENTS.INCENDIO_DELETED, (p) => {
@@ -93,27 +96,49 @@ export default function DetalleIncendio() {
     return () => { u1(); u2(); };
   }, [id, refetch, router]);
 
+  // --------- Identidades ----------
+  const userUuid = user?.usuario_uuid || user?.id || null;
+
+  const creatorCandidates = [
+    (item as any)?.creado_por?.usuario_uuid,
+    (item as any)?.creado_por_uuid,
+    (item as any)?.creadoPor?.usuario_uuid,
+    (item as any)?.creado_por_id,
+    (item as any)?.created_by_uuid,
+    (item as any)?.createdBy?.id,
+    (item as any)?.createdById,
+    (item as any)?.usuario_creador_uuid,
+  ];
+  const creadorUuid = (creatorCandidates.find(v => typeof v === 'string' && v) as string) || null;
+
+  const firstReporterUuid =
+    primerReporte?.reportado_por?.usuario_uuid ??
+    (primerReporte as any)?.reportado_por_uuid ??
+    null;
+
+  const isCreator = !!(userUuid && creadorUuid && String(userUuid) === String(creadorUuid));
+  const isFirstReporter = !!(userUuid && firstReporterUuid && String(userUuid) === String(firstReporterUuid));
+
   const puedeModerarse = useMemo(() => {
     if (!item || !user) return false;
-    if (isAdmin) return true;
-    const creadorId =
-      (item as any)?.creadoPor?.id ??
-      (item as any)?.creado_por?.usuario_uuid ??
-      (item as any)?.creadoPorId ??
-      (item as any)?.createdBy?.id ??
-      (item as any)?.createdById;
-    const userId = user?.id || user?.usuario_uuid;
-    return creadorId && userId && String(creadorId) === String(userId);
-  }, [isAdmin, item, user]);
+    return isAdmin || isCreator;
+  }, [isAdmin, item, user, isCreator]);
+
+  const canSeeCierre = true;
+
+  const canEditCierre = useMemo(() => {
+    if (!userUuid) return false;
+    return isAdmin || isCreator || isFirstReporter;
+  }, [isAdmin, isCreator, isFirstReporter, userUuid]);
+
+  const canFinalizeCierre = isAdmin || isCreator;
 
   const isAprobado = item?.aprobado === true;
 
-  // ---- datos pestaña Actualizaciones ----
   const updates = useMemo(() => {
     const f = (d?: string) => (d ? new Date(d).toLocaleString() : undefined);
     const out: { id: string; title: string; date?: string; text?: string }[] = [];
 
-    // Prioriza el feed de cierre
     if (cierre?.updates?.length) {
       for (const u of cierre.updates) {
         out.push({
@@ -124,7 +149,6 @@ export default function DetalleIncendio() {
         });
       }
     } else {
-      // Fallback: estadoActual + reportes
       if ((item as any)?.estadoActual) {
         const ea = (item as any).estadoActual;
         out.push({
@@ -141,7 +165,6 @@ export default function DetalleIncendio() {
     return out.sort((a, b) => (new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime()));
   }, [item, cierre]);
 
-  // ---- pestaña Información: se enfoca en básicos + Cierre (si hay) ----
   const infoBasico = useMemo(() => {
     if (!item) return [];
     const f = (d?: string | null) => (d ? new Date(d).toLocaleString() : '—');
@@ -166,6 +189,9 @@ export default function DetalleIncendio() {
     try { await Share.share({ message: msg }); } catch {}
   };
 
+  // --- portada calculada ---
+  const coverUrl = useMemo(() => getCoverUrl(item, ultimoReporte), [item, ultimoReporte]);
+
   if (!item) {
     return (
       <View style={styles.loading}>
@@ -174,13 +200,12 @@ export default function DetalleIncendio() {
     );
   }
 
-  // ------ datos del encabezado superior según último reporte ------
+  // KPIs (visual) del último reporte
   const repDepto = ultimoReporte?.departamento?.nombre || '—';
   const repMuni  = ultimoReporte?.municipio?.nombre || '—';
   const repFecha = ultimoReporte?.reportado_en ? new Date(ultimoReporte.reportado_en).toLocaleString() : '—';
   const repMedio = ultimoReporte?.medio?.nombre || '—';
 
-  // ------ datos del reportante ------
   const repUsuario = ultimoReporte?.reportado_por || (item as any)?.creado_por || (item as any)?.creadoPor || null;
   const repNombre = [repUsuario?.nombre, repUsuario?.apellido].filter(Boolean).join(' ') || ultimoReporte?.reportado_por_nombre || '—';
   const repInstit = ultimoReporte?.institucion?.nombre || (repUsuario?.institucion?.nombre ?? '—');
@@ -188,7 +213,6 @@ export default function DetalleIncendio() {
   const repRol = repUsuario?.rol?.nombre || '—';
   const repTel = repUsuario?.telefono ?? ultimoReporte?.telefono ?? '—';
 
-  // ------- helpers de render -------
   const Row = ({ label, value }: { label: string; value?: string | null }) => (
     <View style={{ marginBottom: 8 }}>
       <Text style={{ color: '#666' }}>{label}</Text>
@@ -203,13 +227,12 @@ export default function DetalleIncendio() {
     </View>
   );
 
-  // ---- Badge de estado de cierre ----
   const getStatusColors = (s: string) => {
     switch (s) {
       case 'Extinguido':   return { bg: '#E8F5E9', text: '#2E7D32', border: '#C8E6C9' };
       case 'Controlado':   return { bg: '#FFF8E1', text: '#EF6C00', border: '#FFE0B2' };
       case 'En atención':  return { bg: '#E3F2FD', text: '#1565C0', border: '#BBDEFB' };
-      default:             return { bg: '#F3E5F5', text: '#6A1B9A', border: '#E1BEE7' }; // Pendiente
+      default:             return { bg: '#F3E5F5', text: '#6A1B9A', border: '#E1BEE7' };
     }
   };
   const StatusBadge = ({ status }: { status: string }) => {
@@ -222,6 +245,7 @@ export default function DetalleIncendio() {
   };
 
   const openEditor = async () => {
+    if (!canEditCierre) return;
     try {
       if (!cierre) {
         await initCierre(String(id));
@@ -234,18 +258,13 @@ export default function DetalleIncendio() {
     }
   };
 
-  // ------- render de secciones del cierre -------
   const renderCierre = () => {
     if (!cierre) {
       return (
         <View style={styles.card}>
           <Text>Sin información de cierre.</Text>
-          {puedeModerarse && (
-            <Button
-              mode="outlined"
-              style={{ marginTop: 8 }}
-              onPress={openEditor}
-            >
+          {canEditCierre && (
+            <Button mode="outlined" style={{ marginTop: 8 }} onPress={openEditor}>
               Iniciar y agregar datos de cierre
             </Button>
           )}
@@ -253,37 +272,26 @@ export default function DetalleIncendio() {
       );
     }
 
-
     return (
       <>
-        {/* Badge de estado */}
         <View style={{ marginBottom: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
           <StatusBadge status={estadoCierre} />
-          {puedeModerarse && (
+          {canEditCierre && (
             <Button mode="outlined" onPress={() => setEditorVisible(true)}>
               Editar datos de cierre
             </Button>
           )}
         </View>
 
-        {/* Tipo principal / Composición */}
         {(cierre?.tipo_incendio_principal?.nombre || (cierre?.composicion_tipo?.length ?? 0) > 0) && (
           <Section title="Tipo de incendio">
-            {cierre?.tipo_incendio_principal?.nombre && (
-              <Row label="Principal" value={cierre.tipo_incendio_principal.nombre} />
-            )}
+            {cierre?.tipo_incendio_principal?.nombre && <Row label="Principal" value={cierre.tipo_incendio_principal.nombre} />}
             {Array.isArray(cierre?.composicion_tipo) && cierre.composicion_tipo.length > 0 && (
-              <Row
-                label="Composición"
-                value={cierre.composicion_tipo
-                  .map((x: any) => `${x.tipo_incendio_nombre} ${x.pct}%`)
-                  .join(' • ')}
-              />
+              <Row label="Composición" value={cierre.composicion_tipo.map((x: any) => `${x.tipo_incendio_nombre} ${x.pct}%`).join(' • ')} />
             )}
           </Section>
         )}
 
-        {/* Topografía */}
         {(cierre?.topografia && (cierre.topografia.plano_pct != null || cierre.topografia.ondulado_pct != null || cierre.topografia.quebrado_pct != null)) && (
           <Section title="Topografía">
             <Row label="Plano" value={cierre.topografia.plano_pct != null ? `${cierre.topografia.plano_pct}%` : '—'} />
@@ -292,27 +300,20 @@ export default function DetalleIncendio() {
           </Section>
         )}
 
-        {/* Propiedad */}
         {Array.isArray(cierre?.propiedad) && cierre.propiedad.length > 0 && (
           <Section title="Tipo de propiedad">
             {cierre.propiedad.map((p: any, i: number) => (
-              <Row
-                key={`prop_${i}`}
-                label={p.tipo_propiedad_nombre}
-                value={p.usado ? 'Usado' : 'No usado'}
-              />
+              <Row key={`prop_${i}`} label={p.tipo_propiedad_nombre} value={p.usado ? 'Usado' : 'No usado'} />
             ))}
           </Section>
         )}
 
-        {/* Iniciado junto a */}
         {cierre?.iniciado_junto_a?.iniciado_nombre && (
           <Section title="Iniciado junto a">
             <Row label="Elemento" value={cierre.iniciado_junto_a.iniciado_nombre} />
           </Section>
         )}
 
-        {/* Secuencia de control */}
         {(cierre?.secuencia_control &&
           (cierre.secuencia_control.llegada_medios_terrestres_at ||
            cierre.secuencia_control.llegada_medios_aereos_at ||
@@ -334,7 +335,6 @@ export default function DetalleIncendio() {
           </Section>
         )}
 
-        {/* Superficie */}
         {(cierre?.superficie && (cierre.superficie.area_total_ha != null ||
           cierre.superficie.dentro_ap_ha != null ||
           cierre.superficie.fuera_ap_ha != null ||
@@ -347,20 +347,14 @@ export default function DetalleIncendio() {
           </Section>
         )}
 
-        {/* Superficie por vegetación */}
         {Array.isArray(cierre?.superficie_vegetacion) && cierre.superficie_vegetacion.length > 0 && (
           <Section title="Superficie por vegetación">
             {cierre.superficie_vegetacion.map((v: any, i: number) => (
-              <Row
-                key={`veg_${i}`}
-                label={`${v?.ubicacion || ''} • ${v?.categoria || ''}${v?.subtipo ? ` (${v.subtipo})` : ''}`}
-                value={v?.area_ha != null ? `${v.area_ha} ha` : '—'}
-              />
+              <Row key={`veg_${i}`} label={`${v?.ubicacion || ''} • ${v?.categoria || ''}${v?.subtipo ? ` (${v.subtipo})` : ''}`} value={v?.area_ha != null ? `${v.area_ha} ha` : '—'} />
             ))}
           </Section>
         )}
 
-        {/* Técnicas */}
         {Array.isArray(cierre?.tecnicas) && cierre.tecnicas.length > 0 && (
           <Section title="Técnicas de extinción">
             {cierre.tecnicas.map((t: any, i: number) => (
@@ -369,7 +363,6 @@ export default function DetalleIncendio() {
           </Section>
         )}
 
-        {/* Medios */}
         {(Array.isArray(cierre?.medios?.terrestres) && cierre.medios.terrestres.length > 0) && (
           <Section title="Medios terrestres">
             {cierre.medios.terrestres.map((m: any, i: number) => (
@@ -399,7 +392,6 @@ export default function DetalleIncendio() {
           </Section>
         )}
 
-        {/* Abastos */}
         {Array.isArray(cierre?.abastos) && cierre.abastos.length > 0 && (
           <Section title="Abastos">
             {cierre.abastos.map((a: any, i: number) => (
@@ -408,14 +400,12 @@ export default function DetalleIncendio() {
           </Section>
         )}
 
-        {/* Causa */}
         {(cierre?.causa?.causa_nombre || cierre?.causa?.otro_texto) && (
           <Section title="Causa probable">
             <Row label="Causa" value={cierre.causa.causa_nombre || cierre.causa.otro_texto || '—'} />
           </Section>
         )}
 
-        {/* Meteo */}
         {(cierre?.meteo && (cierre.meteo.temp_c != null || cierre.meteo.hr_pct != null || cierre.meteo.viento_vel != null || cierre.meteo.viento_dir)) && (
           <Section title="Condiciones meteorológicas">
             <Row label="Temperatura" value={cierre.meteo.temp_c != null ? `${cierre.meteo.temp_c} °C` : '—'} />
@@ -427,17 +417,16 @@ export default function DetalleIncendio() {
           </Section>
         )}
 
-        {/* Nota */}
         {cierre?.nota && (
           <Section title="Notas">
             <Text>{cierre.nota}</Text>
           </Section>
         )}
 
-        {/* Acciones del cierre según estado */}
-        {puedeModerarse && (
+        {/* Acciones del cierre */}
+        {canEditCierre && (
           <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
-            {estadoCierre !== 'Extinguido' && (
+            {estadoCierre !== 'Extinguido' && canFinalizeCierre && (
               <Button
                 mode="contained"
                 onPress={async () => {
@@ -481,10 +470,10 @@ export default function DetalleIncendio() {
         <View style={styles.header}>
           <View>
             <Text style={styles.title}>{item.titulo}</Text>
-            {/* Subtítulo muestra el estado del cierre calculado */}
             <Text style={styles.sub}>{estadoCierre}</Text>
           </View>
 
+          {/* Editar incendio: solo admin o creador */}
           {puedeModerarse && (
             <TouchableOpacity onPress={() => router.push({ pathname: '/incendios/crear', params: { id: String(id) } })}>
               <Text style={styles.link}>Editar</Text>
@@ -492,103 +481,69 @@ export default function DetalleIncendio() {
           )}
         </View>
 
-        {/* KPIs arriba del todo sobre el último reporte */}
+        {/* KPIs del último reporte */}
         <View style={styles.kpisTop}>
-          <View style={styles.kpiBox}>
-            <Text style={styles.kpiTop}>Departamento</Text>
-            <Text style={styles.kpiBottom}>{repDepto}</Text>
-          </View>
-          <View style={styles.kpiBox}>
-            <Text style={styles.kpiTop}>Municipio</Text>
-            <Text style={styles.kpiBottom}>{repMuni}</Text>
-          </View>
-          <View style={styles.kpiBox}>
-            <Text style={styles.kpiTop}>Reportado en</Text>
-            <Text style={styles.kpiBottom}>{repFecha}</Text>
-          </View>
-          <View style={styles.kpiBox}>
-            <Text style={styles.kpiTop}>Medio</Text>
-            <Text style={styles.kpiBottom}>{repMedio}</Text>
-          </View>
+          <View style={styles.kpiBox}><Text style={styles.kpiTop}>Departamento</Text><Text style={styles.kpiBottom}>{repDepto}</Text></View>
+          <View style={styles.kpiBox}><Text style={styles.kpiTop}>Municipio</Text><Text style={styles.kpiBottom}>{repMuni}</Text></View>
+          <View style={styles.kpiBox}><Text style={styles.kpiTop}>Reportado en</Text><Text style={styles.kpiBottom}>{repFecha}</Text></View>
+          <View style={styles.kpiBox}><Text style={styles.kpiTop}>Medio</Text><Text style={styles.kpiBottom}>{repMedio}</Text></View>
         </View>
 
         {/* Estado/Aprobado */}
         <View style={styles.kpis}>
-          <View style={styles.kpi}>
-            <Text style={styles.kpiTop}>Estado</Text>
-            {/* KPI de estado también usa el estado calculado */}
-            <Text style={styles.kpiBottom}>{estadoCierre}</Text>
-          </View>
-          <View style={styles.kpi}>
-            <Text style={styles.kpiTop}>Aprobado</Text>
-            <Text style={styles.kpiBottom}>{isAprobado ? 'Sí' : 'No'}</Text>
-          </View>
+          <View style={styles.kpi}><Text style={styles.kpiTop}>Estado</Text><Text style={styles.kpiBottom}>{estadoCierre}</Text></View>
+          <View style={styles.kpi}><Text style={styles.kpiTop}>Aprobado</Text><Text style={styles.kpiBottom}>{isAprobado ? 'Sí' : 'No'}</Text></View>
         </View>
 
         <Text style={styles.meta}>
-          Creado por {[((item as any)?.creado_por?.nombre || (item as any)?.creadoPor?.nombre), ((item as any)?.creado_por?.apellido || (item as any)?.creadoPor?.apellido)]
-            .filter(Boolean).join(' ') || '—'}
+          Creado por {[((item as any)?.creado_por?.nombre || (item as any)?.creadoPor?.nombre), ((item as any)?.creado_por?.apellido || (item as any)?.creadoPor?.apellido)].filter(Boolean).join(' ') || '—'}
           {(item as any).creadoEn || (item as any).creado_en ? ` • ${new Date(((item as any).creadoEn || (item as any).creado_en)).toLocaleString()}` : ''}
         </Text>
 
-        {/* Acciones principales */}
+        {/* Aprobación / Rechazo o Imagen para compartir */}
         {(!isAprobado && puedeModerarse) ? (
           <View style={{ flexDirection: 'row', gap: 10 }}>
-            <Button
-              mode="contained"
-              style={[styles.mainBtn, { backgroundColor: '#2E7D32' }]}
-              onPress={async () => {
-                try { await aprobarIncendio(String(id)); await refetch(); showToast({ type: 'success', message: 'Incendio aprobado' }); }
-                catch { Alert.alert('Error', 'No se pudo aprobar'); }
-              }}
-            >Aprobar</Button>
-            <Button
-              mode="contained"
-              style={[styles.mainBtn, { backgroundColor: '#C62828' }]}
-              onPress={async () => {
-                try { await rechazarIncendio(String(id), 'Revisión: no aprobado'); await refetch(); showToast({ type: 'info', message: 'Incendio rechazado' }); }
-                catch { Alert.alert('Error', 'No se pudo rechazar'); }
-              }}
-            >Rechazar</Button>
+            <Button mode="contained" style={[styles.mainBtn, { backgroundColor: '#2E7D32' }]}
+              onPress={async () => { try { await aprobarIncendio(String(id)); await refetch(); showToast({ type: 'success', message: 'Incendio aprobado' }); } catch { Alert.alert('Error', 'No se pudo aprobar'); } }}>
+              Aprobar
+            </Button>
+            <Button mode="contained" style={[styles.mainBtn, { backgroundColor: '#C62828' }]}
+              onPress={async () => { try { await rechazarIncendio(String(id), 'Revisión: no aprobado'); await refetch(); showToast({ type: 'info', message: 'Incendio rechazado' }); } catch { Alert.alert('Error', 'No se pudo rechazar'); } }}>
+              Rechazar
+            </Button>
           </View>
         ) : (
-          <Button mode="contained" style={[styles.mainBtn, { backgroundColor: '#00B894' }]} onPress={onShare}>
-            Compartir incidencia
-          </Button>
+          <View style={{ marginTop: 8 }}>
+
+              <Image
+                source={coverUrl ? { uri: coverUrl } : require('@/assets/images/placeholder_incendio.png')}
+                style={{ width: '100%', height: 200, borderRadius: 12, backgroundColor: '#eee' }}
+                resizeMode="cover"
+              />
+          </View>
         )}
 
-        {/* Tabs centradas */}
+        {/* Tabs */}
         <View style={styles.tabsWrap}>
           <View style={styles.tabsCentered}>
-            <TouchableOpacity onPress={() => setTab('ACT')}>
-              <Text style={[styles.tab, tab === 'ACT' && styles.tabSel]}>Actualizaciones</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setTab('REP')}>
-              <Text style={[styles.tab, tab === 'REP' && styles.tabSel]}>Reportante</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setTab('INFO')}>
-              <Text style={[styles.tab, tab === 'INFO' && styles.tabSel]}>Información</Text>
-            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setTab('ACT')}><Text style={[styles.tab, tab === 'ACT' && styles.tabSel]}>Actualizaciones</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => setTab('REP')}><Text style={[styles.tab, tab === 'REP' && styles.tabSel]}>Reportante</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => setTab('INFO')}><Text style={[styles.tab, tab === 'INFO' && styles.tabSel]}>Información</Text></TouchableOpacity>
           </View>
         </View>
         <Divider />
 
-        {/* Contenido tabs */}
         <View style={{ paddingHorizontal: 4 }}>
           {tab === 'ACT' && (
             <View style={{ paddingVertical: 12 }}>
               <Text style={styles.sectionTitle}>Historial / Reportes</Text>
-              {updates.length ? (
-                updates.map((u) => (
-                  <View key={u.id} style={styles.card}>
-                    <Text style={{ fontWeight: 'bold' }}>{u.title}</Text>
-                    {u.date ? <Text style={{ color: '#666' }}>{u.date}</Text> : null}
-                    {!!u.text && <Text style={{ marginTop: 4 }}>{u.text}</Text>}
-                  </View>
-                ))
-              ) : (
-                <Text>No hay actualizaciones.</Text>
-              )}
+              {updates.length ? updates.map((u) => (
+                <View key={u.id} style={styles.card}>
+                  <Text style={{ fontWeight: 'bold' }}>{u.title}</Text>
+                  {u.date ? <Text style={{ color: '#666' }}>{u.date}</Text> : null}
+                  {!!u.text && <Text style={{ marginTop: 4 }}>{u.text}</Text>}
+                </View>
+              )) : <Text>No hay actualizaciones.</Text>}
             </View>
           )}
 
@@ -617,16 +572,17 @@ export default function DetalleIncendio() {
                 ))}
               </View>
 
-              <View style={{ marginTop: 16 }}>
-                <Text style={styles.sectionTitle}>Cierre</Text>
-                {renderCierre()}
-              </View>
+              {canSeeCierre && (
+                <View style={{ marginTop: 16 }}>
+                  <Text style={styles.sectionTitle}>Cierre</Text>
+                  {renderCierre()}
+                </View>
+              )}
             </View>
           )}
         </View>
       </ScrollView>
 
-      {/* 👇 Modal editor de cierre */}
       <CierreEditor
         visible={editorVisible}
         incendioId={String(id)}
@@ -653,13 +609,11 @@ const styles = StyleSheet.create({
   sub: { color: '#666' },
   link: { color: '#4CAF50', fontWeight: 'bold' },
 
-  // Top KPIs from latest report
   kpisTop: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
   kpiBox: { flexGrow: 1, flexBasis: '46%', backgroundColor: '#fff', borderRadius: 10, padding: 10, borderColor: '#EEE', borderWidth: 1 },
   kpiTop: { color: '#666' },
   kpiBottom: { fontWeight: 'bold', marginTop: 4 },
 
-  // secondary KPIs
   kpis: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 },
   kpi: { flex: 1, alignItems: 'center', borderRightWidth: 1, borderColor: '#EEE' },
 
@@ -667,7 +621,6 @@ const styles = StyleSheet.create({
 
   mainBtn: { borderRadius: 10, marginTop: 8 },
 
-  // centered tabs
   tabsWrap: { paddingVertical: 8 },
   tabsCentered: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 24 },
   tab: { fontSize: 14, color: '#666' },
@@ -676,7 +629,6 @@ const styles = StyleSheet.create({
   sectionTitle: { fontWeight: 'bold', marginBottom: 8, fontSize: 16 },
   card: { backgroundColor: '#fff', borderRadius: 10, padding: 12, borderColor: '#EEE', borderWidth: 1 },
 
-  // Badge
   badge: {
     alignSelf: 'flex-start',
     paddingVertical: 6,

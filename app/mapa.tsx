@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import {
   View, StyleSheet, TouchableOpacity, TouchableWithoutFeedback,
   Animated, Easing, Modal, FlatList, Platform, Image, Linking, Share, ScrollView, Dimensions
@@ -70,10 +70,9 @@ export default function Mapa() {
   const [heatmapEnabled, setHeatmapEnabled] = useState<boolean>(true);
   const [trackViews, setTrackViews] = useState(true);
   useEffect(() => {
-    const t = setTimeout(() => setTrackViews(false), 800); // luego vuelve a false para rendimiento
+    const t = setTimeout(() => setTrackViews(false), 800);
     return () => clearTimeout(t);
   }, []);
-
 
   const drawerAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
   const leyendaAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
@@ -115,7 +114,6 @@ export default function Mapa() {
     geo: firmsGeo,
   } = useFirmsGT();
 
-  // ====== init ======
   useEffect(() => { (async () => {
     try { const v = await AsyncStorage.getItem(AS_HEATMAP); if (v === '0') setHeatmapEnabled(false); if (v === '1') setHeatmapEnabled(true); } catch {}
   })(); }, []);
@@ -129,10 +127,8 @@ export default function Mapa() {
     return () => sub && sub();
   }, []);
 
-  // ====== errores ======
   const [errorMsg, setErrorMsg] = useState<string>('');
 
-  // ====== reload estabilizado + backoff ======
   const lastReloadRef = useRef<number>(0);
   const reloadingRef = useRef<boolean>(false);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -148,7 +144,7 @@ export default function Mapa() {
     const now = Date.now();
     if (now - lastReloadRef.current < 2000 || reloadingRef.current) return;
     reloadingRef.current = true;
-    try {
+       try {
       await reloadRef.current();
       lastReloadRef.current = Date.now();
       resetRetryBackoff();
@@ -204,7 +200,6 @@ export default function Mapa() {
 
   useFocusEffect(useCallback(() => { safeReload(); }, [safeReload]));
 
-  // ====== logs coords inválidas ======
   useEffect(() => {
     if (!items?.length) return;
     let invalid = 0;
@@ -212,7 +207,6 @@ export default function Mapa() {
     if (invalid) console.log(`[MAP] Incendios sin coord válidas: ${invalid}/${items.length}`);
   }, [items]);
 
-  // ====== Cache + estado para meta ======
   const [cierreEstados, setCierreEstados] = useState<Record<string, string>>({});
   const [reportantes, setReportantes] = useState<Record<string, string>>({});
   const metaCacheRef = useRef<{ estados: Record<string,string>, reportantes: Record<string,string> }>({
@@ -221,7 +215,6 @@ export default function Mapa() {
   const abortersRef = useRef<Map<string, AbortController>>(new Map());
   const inFlightRepRef = useRef<Map<string, Promise<void>>>(new Map());
 
-  // ---- 1) Batch: estados de TODOS los markers ----
   const fetchEstadosBatch = useCallback(async (arr: any[]) => {
     const ids = Array.from(new Set(arr.map(it => String(it?.id ?? it?.incendio_uuid)).filter(Boolean)));
     const pendientes = ids.filter(id => !(id in metaCacheRef.current.estados));
@@ -239,7 +232,6 @@ export default function Mapa() {
       metaCacheRef.current.estados = { ...metaCacheRef.current.estados, ...estados };
       setCierreEstados(prev => ({ ...prev, ...estados }));
     } catch (e) {
-      console.warn('[MAP][fetchEstadosBatch] fallo', e);
       const estados: Record<string,string> = {};
       for (const id of pendientes) estados[id] = 'Pendiente';
       metaCacheRef.current.estados = { ...metaCacheRef.current.estados, ...estados };
@@ -248,7 +240,6 @@ export default function Mapa() {
   }, []);
   useEffect(() => { if (items?.length) fetchEstadosBatch(items as any[]); }, [items, fetchEstadosBatch]);
 
-  // ---- 2) Lazy: reportante (await antes de mostrar preview) ----
   const ensureReportante = useCallback(async (id: string, item: any) => {
     if (!id || metaCacheRef.current.reportantes[id]) return;
     const existing = inFlightRepRef.current.get(id);
@@ -288,7 +279,6 @@ export default function Mapa() {
   }, []);
   useEffect(() => () => { abortersRef.current.forEach(c => c.abort()); abortersRef.current.clear(); }, []);
 
-  // ====== autofit inicial ======
   const firstAutoFitDoneRef = useRef(false);
   useEffect(() => {
     if (!mapRef.current || !items.length || firstAutoFitDoneRef.current) return;
@@ -299,7 +289,6 @@ export default function Mapa() {
     }
   }, [items, mapRef, fitToCoordinates, insets.top, insets.bottom]);
 
-  // ====== UI helpers ======
   const openDrawer = () => { setDrawerOpen(true); Animated.timing(drawerAnim, { toValue: 0, duration: 300, easing: Easing.out(Easing.ease), useNativeDriver: false }).start(); };
   const closeDrawer = () => { Animated.timing(drawerAnim, { toValue: -DRAWER_WIDTH, duration: 300, easing: Easing.in(Easing.ease), useNativeDriver: false }).start(() => setDrawerOpen(false)); };
   const openLeyenda = () => { setLeyendaOpen(true); Animated.timing(leyendaAnim, { toValue: 0, duration: 300, easing: Easing.out(Easing.ease), useNativeDriver: false }).start(); };
@@ -308,7 +297,11 @@ export default function Mapa() {
   const closeMenu = () => { Animated.timing(menuAnim, { toValue: -DRAWER_WIDTH, duration: 300, easing: Easing.in(Easing.ease), useNativeDriver: false }).start(() => setMenuOpen(false)); };
 
   const handleMenuNavigate = (route: string) => {
-    if (route === 'Mapa' || route === 'Ayuda' || route === 'Logout') { closeMenu(); return; }
+    if ( route === 'Logout') { closeMenu(); return; }
+    if (route === 'Mi Usuario') { closeMenu(); router.push('/mi-usuario'); return; }
+        if (route === 'notificaciones') { closeMenu(); router.push('/notificaciones'); return; }
+
+    if (route === 'Reportes') { closeMenu(); router.push('/incendios/reportes'); return; }
     if (route === 'listaIncendios') { closeMenu(); router.push('/incendios/listaIncendios'); return; }
     if (route === 'Catalogo Incendio') { closeMenu(); router.push('/admin/catalogos'); return; }
     if (route === 'Estados') { closeMenu(); router.push('/admin/estados'); return; }
@@ -335,10 +328,8 @@ export default function Mapa() {
 
   const showFirmDots = span.latDelta < 0.05 && span.lngDelta < 0.05;
 
-  // ====== Preview manual (sin Callout)
   const [preview, setPreview] = useState<null | { id: string; item: any; pt: { x: number; y: number } }>(null);
 
-  // ---- Custom marker (círculo con halo, sin pico)
   const MarkerDot = ({ color }: { color: string }) => (
     <View style={styles.dotWrap}>
       <View style={[styles.dotHalo, { backgroundColor: color }]} />
@@ -346,10 +337,34 @@ export default function Mapa() {
     </View>
   );
 
-  // ★ Render de markers con custom view y preview manual
+  const [showIncendios, setShowIncendios] = useState<boolean>(true);
+  const [estadosOpen, setEstadosOpen] = useState(false);
+  const estadosDisponibles = useMemo(() => {
+    const byId = new Set(items.map((it: any) => String(it?.id ?? it?.incendio_uuid)).filter(Boolean));
+    const list = Array.from(byId).map(id => cierreEstados[id]).filter(Boolean);
+    return Array.from(new Set(list));
+  }, [items, cierreEstados]);
+  const [selectedEstados, setSelectedEstados] = useState<string[]>([]);
+
+  const itemsFiltrados = useMemo(() => {
+    const base = showIncendios ? items : [];
+    if (!selectedEstados.length) return base;
+    return base.filter((it: any) => {
+      const id = String(it?.id ?? it?.incendio_uuid);
+      const est = cierreEstados[id] || 'Pendiente';
+      return selectedEstados.includes(est);
+    });
+  }, [items, showIncendios, selectedEstados, cierreEstados]);
+
+  const estadosInUseForLegend = useMemo(() => {
+    const ids = itemsFiltrados.map((it: any) => String(it?.id ?? it?.incendio_uuid)).filter(Boolean);
+    const list = ids.map(id => cierreEstados[id]).filter(Boolean);
+    return Array.from(new Set(list));
+  }, [itemsFiltrados, cierreEstados]);
+
   const renderMarkers = () => (
     <>
-      {items.map((item) => {
+      {itemsFiltrados.map((item) => {
         const coord = getLatLngFromIncendio(item as any);
         if (!coord) return null;
 
@@ -357,44 +372,48 @@ export default function Mapa() {
         const estado = cierreEstados[id] || 'Pendiente';
         const color = cierreColor(estado);
 
-      const handleMarkerPress = async () => {
-        const point = await mapRef.current?.pointForCoordinate(coord as LatLng);
-        const pt = point || { x: screen.width / 2, y: screen.height / 2 };
+        const handleMarkerPress = async () => {
+          const point = await mapRef.current?.pointForCoordinate(coord as LatLng);
+          const pt = point || { x: screen.width / 2, y: screen.height / 2 };
 
-        await ensureReportante(id, item);
+          await ensureReportante(id, item);
 
-        const cover = getCoverUrl(item as any);
+          const cover = getCoverUrl(item as any);
 
-        // Si hay foto, abrimos el modal de foto a pantalla completa.
-        if (cover) {
-          debounceTap(() =>
-            setViewer({ visible: true, urls: [cover], index: 0 })
-          );
-          return;
-        }
+          if (cover) {
+            debounceTap(() =>
+              setViewer({ visible: true, urls: [cover], index: 0 })
+            );
+            return;
+          }
 
-        // Si NO hay foto, mantenemos tu preview card actual.
-        debounceTap(() => setPreview({ id, item, pt }));
-      };
+          debounceTap(() => setPreview({ id, item, pt }));
+        };
 
-
-return (
-  <Marker
-    key={id}
-    coordinate={coord}
-    // tracksViewChanges ya no hace falta si no hay hijo
-    // tracksViewChanges={false}
-    pinColor={color}              // ← usa tu color calculado
-    zIndex={9999}                 // ← que quede encima del heatmap
-    onPress={handleMarkerPress}
-    anchor={{ x: 0.5, y: 1 }}     // ← ancla clásico del pin (punta)
-  />
-);
-
-
+        return (
+          <Marker
+            key={id}
+            coordinate={coord}
+            pinColor={color}
+            zIndex={9999}
+            onPress={handleMarkerPress}
+            anchor={{ x: 0.5, y: 1 }}
+          />
+        );
       })}
     </>
   );
+
+  const refetchEstadosAll = useCallback(async () => {
+    metaCacheRef.current.estados = {};
+    setCierreEstados({});
+    if (items?.length) await fetchEstadosBatch(items as any[]);
+  }, [items, fetchEstadosBatch]);
+
+  const handleRefresh = useCallback(async () => {
+    await safeReload();
+    await refetchEstadosAll();
+  }, [safeReload, refetchEstadosAll]);
 
   return (
     <View style={styles.container}>
@@ -415,13 +434,11 @@ return (
         mapType={mapType}
         mapPadding={{ top: insets.top + 48, right: 0, bottom: insets.bottom, left: 0 }}
       >
-
-
-        {firmsEnabled && firmsHeat.length > 0 && (
+        {firmsEnabled && firmsHeat.length > 0 && !showFirmDots && (
           <Heatmap
             points={firmsHeat}
-            radius={25}
-            opacity={0.6}
+            radius={15}
+            opacity={0.8}
             gradient={{ colors: ['#2196F3', '#03A9F4', '#8BC34A', '#FFC107', '#F44336'], startPoints: [0.1, 0.3, 0.5, 0.7, 0.9], colorMapSize: 256 }}
           />
         )}
@@ -441,7 +458,7 @@ return (
           );
         })}
 
-        {renderMarkers()}
+        {showIncendios && renderMarkers()}
       </MapView>
 
       {(loading || firmsLoading) && (
@@ -453,7 +470,6 @@ return (
         </View>
       )}
 
-      {/* ===== Preview card + overlay (overlay detrás) ===== */}
       {preview && (() => {
         const { id, item, pt } = preview;
         const estado = cierreEstados[id] || 'Pendiente';
@@ -478,12 +494,10 @@ return (
 
         return (
           <>
-            {/* Fondo gris detrás del modal */}
             <TouchableWithoutFeedback onPress={() => setPreview(null)}>
               <View style={styles.previewOverlayBehind} />
             </TouchableWithoutFeedback>
 
-            {/* Tarjeta por encima */}
             <View
               style={[styles.previewCard, {
                 left, top, width: CARD_W,
@@ -522,7 +536,7 @@ return (
               </Text>
 
               <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
-                        <TouchableOpacity
+                <TouchableOpacity
                   onPress={() => router.push(`/incendios/detalles?id=${id}`)}
                   style={[styles.cardBtn, { backgroundColor: '#E8F5E9' }]}
                 >
@@ -543,7 +557,7 @@ return (
       )}
 
       <MapTypeDrawer animation={drawerAnim} onSelectType={(type) => { setMapType(type); closeDrawer(); }} />
-      <LeyendaDrawer animation={leyendaAnim} />
+      <LeyendaDrawer animation={leyendaAnim} statesInUse={estadosInUseForLegend} getColor={(e) => cierreColor(e)} />
       <MenuDrawer animation={menuAnim} onClose={closeMenu} onNavigate={handleMenuNavigate} isAdmin={isAdmin} />
 
       <View style={[styles.header, { paddingTop: insets.top + 12, paddingBottom: 15 }]}>
@@ -554,7 +568,7 @@ return (
         <View style={{ alignItems: 'center' }}>
           <Text style={styles.headerText}>App incendios</Text>
           <Text style={{ color: '#E8F5E9', fontSize: 12 }}>
-            Mostrando {items.length} incendios
+            Mostrando {itemsFiltrados.length} incendios
           </Text>
         </View>
 
@@ -574,13 +588,12 @@ return (
         <CustomButton icon="layers" label="Capa" onPress={openDrawer} />
         <CustomButton icon="location" label="Cerca" onPress={centerOnUser} />
         <CustomButton icon="book" label="Leyenda" onPress={openLeyenda} />
-        <CustomButton icon="refresh" label={loading ? '...' : 'Recargar'} onPress={() => safeReload()} />
+        <CustomButton icon="refresh" label={loading ? '...' : 'Recargar'} onPress={handleRefresh} />
         <CustomButton icon="map" label="GT" onPress={() => fitToCoordinates(GT_BBOX as any, { top: 80, right: 80, bottom: 80, left: 80 })} />
       </View>
 
       <View pointerEvents="box-none" style={[styles.topChipsWrap, { top: (insets.top || 0) + 70 }]}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.topChipsBar}>
-
           <Chip selected={firmsEnabled} onPress={() => setFirmsEnabled(v => !v)} style={styles.chip} icon={firmsEnabled ? 'satellite-uplink' : 'satellite-variant'} accessibilityRole="button" accessibilityLabel="Alternar FIRMS">
             {firmsEnabled ? `FIRMS: ${daysWindow}d` : 'FIRMS: OFF'}
           </Chip>
@@ -589,6 +602,13 @@ return (
             {`${daysWindow} días`}
           </Chip>
 
+          <Chip selected={showIncendios} onPress={() => setShowIncendios(v => !v)} style={styles.chip} icon={showIncendios ? 'fire' : 'close'} accessibilityRole="button" accessibilityLabel="Alternar incendios">
+            {showIncendios ? 'Incendios: ON' : 'Incendios: OFF'}
+          </Chip>
+
+          <Chip style={styles.chip} icon="filter" onPress={() => setEstadosOpen(true)} accessibilityRole="button" accessibilityLabel="Filtrar por estado">
+            {selectedEstados.length ? `Estados (${selectedEstados.length})` : 'Estados: Todos'}
+          </Chip>
         </ScrollView>
       </View>
 
@@ -613,11 +633,8 @@ return (
                   onPress={() => {
                     setSelectedEtiquetaIds(prev => {
                       const set = new Set(prev);
-                      if (checked) {
-                        set.delete(Number(item.id));
-                      } else {
-                        set.add(Number(item.id));
-                      }
+                      if (checked) set.delete(Number(item.id));
+                      else set.add(Number(item.id));
                       return Array.from(set);
                     });
                   }}
@@ -641,11 +658,59 @@ return (
         </View>
       </Modal>
 
-      {!loading && items.length === 0 && (
+      <Modal visible={estadosOpen} transparent animationType="fade" onRequestClose={() => setEstadosOpen(false)}>
+        <TouchableWithoutFeedback onPress={() => setEstadosOpen(false)}>
+          <View style={styles.modalOverlay} />
+        </TouchableWithoutFeedback>
+
+        <View style={[styles.bottomSheet, { paddingBottom: insets.bottom + 12 }]}>
+          <Text style={styles.sheetTitle}>Filtrar por estados</Text>
+
+          <FlatList
+            data={estadosDisponibles}
+            keyExtractor={(x) => String(x)}
+            style={{ maxHeight: 340 }}
+            renderItem={({ item }) => {
+              const checked = selectedEstados.includes(item);
+              return (
+                <TouchableOpacity
+                  style={styles.sheetRow}
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    setSelectedEstados(prev => {
+                      const set = new Set(prev);
+                      if (checked) set.delete(item);
+                      else set.add(item);
+                      return Array.from(set);
+                    });
+                  }}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked }}
+                  accessibilityLabel={`Estado ${item}`}
+                >
+                  <Checkbox status={checked ? 'checked' : 'unchecked'} />
+                  <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: cierreColor(item), marginRight: 8 }} />
+                  <Text>{item}</Text>
+                </TouchableOpacity>
+              );
+            }}
+            ListEmptyComponent={<Text>No hay estados disponibles</Text>}
+          />
+
+          <View style={styles.sheetActions}>
+            <Button onPress={() => setSelectedEstados(estadosDisponibles)}>Todos</Button>
+            <Button onPress={() => setSelectedEstados([])}>Limpiar</Button>
+            <View style={{ flex: 1 }} />
+            <Button mode="contained" onPress={() => setEstadosOpen(false)}>Aplicar</Button>
+          </View>
+        </View>
+      </Modal>
+
+      {!loading && itemsFiltrados.length === 0 && (
         <View style={[styles.emptyOverlay, { top: (insets.top || 0) + 120 }]}>
           <EmptyState
             title="No hay incendios para mostrar"
-            subtitle="Cuando haya reportes, aparecerán aquí."
+            subtitle="Ajusta los filtros o visibilidad para ver resultados."
             actionLabel={isAdmin ? 'Crear reporte aquí' : undefined}
             onAction={() => {
               if (isAdmin) {
@@ -687,11 +752,9 @@ const styles = StyleSheet.create({
   rightButtons: { position: 'absolute', right: 16, gap: 10, zIndex: 3 },
   customButton: { backgroundColor: '#009688', borderRadius: 10, padding: 10, alignItems: 'center' },
   buttonLabel: { color: '#fff', fontSize: 12, marginTop: 4 },
-
   topChipsWrap: { position: 'absolute', left: 16, right: 16, zIndex: 3 },
   topChipsBar: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingRight: 8 },
   chip: { backgroundColor: '#FFFFFFEE', marginRight: 8 },
-
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)' },
   bottomSheet: {
     position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#fff',
@@ -704,19 +767,16 @@ const styles = StyleSheet.create({
   sheetTitle: { fontWeight: 'bold', fontSize: 16, marginBottom: 8, textAlign: 'center' },
   sheetRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, gap: 8 },
   sheetActions: { flexDirection: 'row', alignItems: 'center', marginTop: 8 },
-
-  // ==== Custom markers (halo redondo)
   dotWrap: { alignItems: 'center', justifyContent: 'center' },
-dotHalo: {
-  position: 'absolute',
-  width: 26,
-  height: 26,
-  borderRadius: 13,
-  opacity: 0.25,
-  borderWidth: 1,            // <— añade esto
-  borderColor: '#00000022',  // <— sombra leve del halo
-},
-
+  dotHalo: {
+    position: 'absolute',
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    opacity: 0.25,
+    borderWidth: 1,
+    borderColor: '#00000022',
+  },
   dotCore: {
     width: 16,
     height: 16,
@@ -728,12 +788,10 @@ dotHalo: {
       android: { elevation: 3 },
     }),
   },
-
   firmsDot: {
     width: 10, height: 10, borderRadius: 5, backgroundColor: '#FF5722',
     borderWidth: 1, borderColor: '#fff',
   },
-
   previewOverlayBehind: {
     position: 'absolute',
     top: 0, left: 0, right: 0, bottom: 0,
@@ -750,7 +808,6 @@ dotHalo: {
     shadowColor: '#000', shadowOpacity: 0.22, shadowRadius: 8,
     shadowOffset: { width: 0, height: 4 },
   },
-
   cardBtn: {
     backgroundColor: '#EEE',
     paddingVertical: 6,
