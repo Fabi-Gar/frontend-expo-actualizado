@@ -30,8 +30,7 @@ import MapPickerModal from '@/components/MapPickerModal';
 import SingleSelectModal from '@/components/SelectorModals/SingleSelectModal';
 
 import { listCatalogoItems, listDepartamentos, listMunicipios } from '@/services/catalogos';
-import { createIncendioWithReporte } from '@/services/incendios';
-import { uploadReporteFoto } from '@/services/uploads';
+import { createIncendioWithReporteFormData } from '@/services/incendios'; // Cambiar a FormData
 
 type Option = { id: string; label: string };
 
@@ -89,7 +88,6 @@ export default function CrearIncendioConReporte() {
     fileName?: string | null;
     mimeType?: string | null;
   } | null>(null);
-  const [uploadPct, setUploadPct] = useState(0);
 
   // Seed inicial
   const seedRef = useRef<FormValues | null>(null);
@@ -261,19 +259,7 @@ export default function CrearIncendioConReporte() {
     }
   }, []);
 
-  if (initLoading || !seedRef.current) {
-    return (
-      <View style={styles.loading}>
-        <ActivityIndicator />
-        <Text style={{ marginTop: 8 }}>Cargando…</Text>
-      </View>
-    );
-  }
-
-  const nameById = (arr: Option[], id?: string | null) =>
-    id ? (arr.find((x) => String(x.id) === String(id))?.label ?? '') : '';
-
-  // Submit
+  // Submit con FormData
   const handleSubmitCreate = async (values: FormValues) => {
     try {
       setLoading(true);
@@ -297,6 +283,10 @@ export default function CrearIncendioConReporte() {
         return;
       }
 
+      // Preparar FormData
+      const formData = new FormData();
+      
+      // Datos del incendio y reporte como JSON
       const payload = {
         titulo: values.titulo.trim(),
         descripcion: values.descripcion?.trim() || null,
@@ -314,10 +304,11 @@ export default function CrearIncendioConReporte() {
         },
       };
 
-      const { incendio, reporte_uuid } = await createIncendioWithReporte(payload);
+      formData.append('incendio', JSON.stringify(payload));
+      formData.append('reporte', JSON.stringify(payload.reporte));
 
-      // Si hay foto seleccionada, comprimirla y subirla
-      if (reporte_uuid && pickedImage?.uri) {
+      // Agregar foto si existe (comprimida)
+      if (pickedImage?.uri) {
         try {
           const manipulated = await ImageManipulator.manipulateAsync(
             pickedImage.uri,
@@ -325,32 +316,40 @@ export default function CrearIncendioConReporte() {
             { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
           );
 
-          setUploadPct(0);
-          await uploadReporteFoto(
-            String(reporte_uuid),
-            {
-              uri: manipulated.uri,
-              name: pickedImage.fileName || `foto_${Date.now()}.jpg`,
-              type: 'image/jpeg',
-            },
-            undefined,
-            (pct) => setUploadPct(pct)
-          );
+          formData.append('file', {
+            uri: manipulated.uri,
+            name: pickedImage.fileName || `foto_${Date.now()}.jpg`,
+            type: 'image/jpeg',
+          } as any);
         } catch (e) {
-          console.error('[CREAR] subida de foto falló', e);
-          Alert.alert('Aviso', 'Incendio creado, pero la foto no se pudo subir.');
+          console.error('[CREAR] compresión de foto falló', e);
+          Alert.alert('Aviso', 'No se pudo procesar la imagen, se creará sin foto');
         }
       }
 
-      Alert.alert('Listo', 'Incendio creado con reporte');
+      // Usar el servicio FormData
+      const result = await createIncendioWithReporteFormData(formData);
+
+      Alert.alert('Listo', `Incendio creado ${pickedImage ? 'con foto' : 'sin foto'}`);
       router.replace('/mapa');
     } catch (e: any) {
       reportError(e, 'No se pudo guardar');
     } finally {
       setLoading(false);
-      setUploadPct(0);
     }
   };
+
+  if (initLoading || !seedRef.current) {
+    return (
+      <View style={styles.loading}>
+        <ActivityIndicator />
+        <Text style={{ marginTop: 8 }}>Cargando…</Text>
+      </View>
+    );
+  }
+
+  const nameById = (arr: Option[], id?: string | null) =>
+    id ? (arr.find((x) => String(x.id) === String(id))?.label ?? '') : '';
 
   const seed = seedRef.current;
 
@@ -368,7 +367,7 @@ export default function CrearIncendioConReporte() {
           keyboardShouldPersistTaps="handled"
           enableOnAndroid
           enableAutomaticScroll
-          extraScrollHeight={Platform.select({ ios: 24, android: 56 })} // empuje adicional
+          extraScrollHeight={Platform.select({ ios: 24, android: 56 })}
           keyboardOpeningTime={0}
         >
           <Formik<FormValues>
@@ -588,9 +587,6 @@ export default function CrearIncendioConReporte() {
                       Elegir imagen
                     </Button>
                   )}
-                  {uploadPct > 0 && uploadPct < 1 ? (
-                    <Text>Subiendo foto… {Math.round(uploadPct * 100)}%</Text>
-                  ) : null}
 
                   {/* Acciones */}
                   <View style={styles.actions}>

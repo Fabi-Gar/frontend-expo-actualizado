@@ -607,6 +607,16 @@ export async function hideIncendio(id: string) {
   return fromBackendIncendio(data);
 }
 
+export async function createIncendioWithReporteFormData(formData: FormData) {
+  const { data } = await api.post('/incendios/with-reporte', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+    timeout: 60000,
+  });
+  return data;
+}
+
 export async function setEstadoIncendio(
   incendioId: string,
   opts: {

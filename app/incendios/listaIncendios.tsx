@@ -1,14 +1,16 @@
+// app/incendios/listaIncendios.tsx
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { View, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Image } from 'react-native';
 import { Text, TextInput, Chip, Menu, Divider, Button, Snackbar } from 'react-native-paper';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 
-import { listIncendios, Incendio, listIncendiosSinAprobar } from '@/services/incendios';
+import { listIncendios, listIncendiosSinAprobar, type Incendio } from '@/services/incendios';
 import { getUser } from '@/session';
 import { isAdminUser } from '../utils/roles';
-import { getCierre } from '@/services/cierre';
+import { api } from '@/client';
 import { cierreBadgeStyle, cierreColor } from '@/app/utils/cierre';
+import { getFirstPhotoUrlByIncendio } from '@/services/photos';
 
 /* ------------------ helpers ------------------ */
 function timeAgo(iso?: string | null) {
@@ -26,27 +28,22 @@ function timeAgo(iso?: string | null) {
   return 'Hace segundos';
 }
 
+const PAGE_SIZE = 10;
+
+// id normalizado
+const getId = (it: any) => String(it?.id ?? it?.incendio_uuid ?? '');
+
+// creado/actualizado para ordenar
+const getWhen = (it: any) =>
+  it?.actualizado_en || it?.actualizadoEn || it?.creado_en || it?.creadoEn || it?.estadoActual?.fecha || null;
+
 // Miniatura: intenta varias fuentes del objeto normalizado
-function pickThumb(it: Incendio): string | null {
-  const direct =
-    it.thumbnailUrl ||
-    it.portadaUrl ||
-    (Array.isArray(it.fotos) && it.fotos[0]?.url) ||
-    (Array.isArray(it.reportes) && it.reportes[0]?.fotos?.[0]?.url) ||
-    null;
-
-  if (!direct) return null;
-
-  // cache-busting simple usando actualizado/creado o estadoActual.fecha
-  const t =
-    (it as any).actualizadoEn ||
-    (it as any).creadoEn ||
-    it.estadoActual?.fecha ||
-    new Date().toISOString();
-
-  const ts = Date.parse(String(t)) || Date.now();
-  return direct.includes('?') ? `${direct}&v=${ts}` : `${direct}?v=${ts}`;
-}
+const pickDirectThumbFields = (it: any): string | null =>
+  it?.thumbnailUrl ||
+  it?.portadaUrl ||
+  (Array.isArray(it?.fotos) && it.fotos[0]?.url) ||
+  (Array.isArray(it?.reportes) && it.reportes[0]?.fotos?.[0]?.url) ||
+  null;
 
 /* ------------------ tipos filtro ------------------ */
 type AprobadoFilter = 'ALL' | 'APROBADOS' | 'NO_APROBADOS';
@@ -54,16 +51,31 @@ type AprobadoFilter = 'ALL' | 'APROBADOS' | 'NO_APROBADOS';
 export default function IncendiosList() {
   const [items, setItems] = useState<Incendio[]>([]);
   const [q, setQ] = useState('');
-  const [, setUser] = useState<any>(null);
+  const [user, setUser] = useState<any>(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  // estados de cierre por incendio_uuid/id
+  // estados de cierre por incendio_uuid/id (dinámico)
   const [cierreEstados, setCierreEstados] = useState<Record<string, string>>({});
+
+  // cache para covers y estados; in-flight control
+  const [covers, setCovers] = useState<Record<string, string>>({});
+  const metaCacheRef = useRef<{ estados: Record<string, string>; covers: Record<string, string> }>({
+    estados: {},
+    covers: {},
+  });
+  const inFlightCovers = useRef<Map<string, Promise<void>>>(new Map());
+  const inFlightEstados = useRef<Set<string>>(new Set());
 
   // filtros UI
   const [aprobFilter, setAprobFilter] = useState<AprobadoFilter>('ALL');
-  const [estadoFilter, setEstadoFilter] = useState<string>('TODOS');
-  const [estadoMenuVisible, setEstadoMenuVisible] = useState(false);
+  const [estadoFilterMenu, setEstadoFilterMenu] = useState(false);
+  const [selectedEstados, setSelectedEstados] = useState<string[]>([]); // usando estados de cierre dinámicos
+
+  // paginación
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState<boolean>(true);
+  const loadingRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // error amigable
   const [errorMsg, setErrorMsg] = useState('');
@@ -71,24 +83,219 @@ export default function IncendiosList() {
   // para inicializar el filtro por defecto (solo una vez) cuando sepamos si es admin
   const initRef = useRef(false);
 
-  // throttle / retry
-  const lastLoadRef = useRef(0);
-  const loadingRef = useRef(false);
-  const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Rate limiting protection y control de scroll
+  const lastRequestTimeRef = useRef<number>(0);
+  const lastEndReachedTimeRef = useRef<number>(0);
+  const isScrollingRef = useRef<boolean>(false);
+  const scrollEndTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  useEffect(() => () => { if (retryRef.current) clearTimeout(retryRef.current); }, []);
-
-  const scheduleRetry = useCallback((ms: number) => {
-    if (retryRef.current) return;
-    retryRef.current = setTimeout(() => {
-      retryRef.current = null;
-      safeLoad();
-    }, ms);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // ==== Rate Limiting Helper ====
+  const executeWithRateLimit = useCallback(async (requestFn: () => Promise<any>, minDelay: number = 1000) => {
+    const now = Date.now();
+    const timeSinceLastRequest = now - lastRequestTimeRef.current;
+    
+    if (timeSinceLastRequest < minDelay) {
+      await new Promise(resolve => setTimeout(resolve, minDelay - timeSinceLastRequest));
+    }
+    
+    lastRequestTimeRef.current = Date.now();
+    return requestFn();
   }, []);
+
+  // ==== Control de Scroll ====
+  const handleScrollBegin = useCallback(() => {
+    isScrollingRef.current = true;
+    if (scrollEndTimerRef.current) {
+      clearTimeout(scrollEndTimerRef.current);
+    }
+  }, []);
+
+  const handleScrollEnd = useCallback(() => {
+    scrollEndTimerRef.current = setTimeout(() => {
+      isScrollingRef.current = false;
+    }, 500); // 500ms después de que termine el scroll
+  }, []);
+
+  // ==== Resolver cover sin duplicados, con cache e Image.prefetch ====
+  const resolveCover = useCallback(async (id: string, item: any) => {
+    if (!id) return;
+    
+    // Verificar cache primero
+    if (metaCacheRef.current.covers[id]) return;
+    
+    // Evitar requests duplicados
+    if (inFlightCovers.current.has(id)) {
+      await inFlightCovers.current.get(id);
+      return;
+    }
+
+    const p = (async () => {
+      // Primero intentar con campos directos del item
+      const direct = pickDirectThumbFields(item);
+      if (direct) {
+        const normalized = encodeURI(direct);
+        metaCacheRef.current.covers[id] = normalized;
+        setCovers(prev => ({ ...prev, [id]: normalized }));
+        Image.prefetch(normalized).catch(() => {});
+        return;
+      }
+      
+      // Solo hacer request si no hay thumbnail directo y no estamos scrolleando
+      if (isScrollingRef.current) return;
+      
+      try {
+        const url = await executeWithRateLimit(() => getFirstPhotoUrlByIncendio(id));
+        if (url) {
+          const normalized = encodeURI(url);
+          metaCacheRef.current.covers[id] = normalized;
+          setCovers(prev => ({ ...prev, [id]: normalized }));
+          Image.prefetch(normalized).catch(() => {});
+        }
+      } catch (error) {
+        console.warn(`[COVER] Error loading cover for ${id}:`, error);
+      }
+    })();
+
+    inFlightCovers.current.set(id, p);
+    try {
+      await p;
+    } finally {
+      inFlightCovers.current.delete(id);
+    }
+  }, [executeWithRateLimit]);
+
+  // Cargar covers de visibles (como markers)
+  const onViewableItemsChanged = useRef(({ viewableItems }: any) => {
+    // No cargar covers mientras se está scrolleando
+    if (isScrollingRef.current) return;
+
+    const visibleIds = new Set(viewableItems.map((v: any) => getId(v?.item)).filter(Boolean));
+    
+    // Precargar solo los que son visibles y no están en cache
+    for (const v of viewableItems || []) {
+      const it = v?.item;
+      const id = getId(it);
+      if (id && !metaCacheRef.current.covers[id] && !inFlightCovers.current.has(id)) {
+        resolveCover(id, it);
+      }
+    }
+  });
+  
+  const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 50 });
+
+  // ==== Estados por batch (con debounce y deduplicación) ====
+  const fetchEstadosBatch = useCallback(async (arr: any[]) => {
+    const ids = Array.from(new Set(arr.map(it => getId(it)).filter(Boolean)));
+    
+    // Filtrar IDs que ya están en cache o en proceso
+    const pendientes = ids.filter(id => 
+      !(id in metaCacheRef.current.estados) && 
+      !inFlightEstados.current.has(id)
+    );
+    
+    if (!pendientes.length) {
+      setCierreEstados(prev => ({ ...prev, ...metaCacheRef.current.estados }));
+      return;
+    }
+
+    // Marcar como en proceso
+    pendientes.forEach(id => inFlightEstados.current.add(id));
+
+    try {
+      const { data } = await executeWithRateLimit(() => 
+        api.get('/cierre/estados', { 
+          params: { ids: pendientes.join(',') },
+          signal: abortControllerRef.current?.signal
+        })
+      );
+      
+      const estados: Record<string, string> = {};
+      for (const id of pendientes) {
+        const entry = data?.byId?.[id];
+        estados[id] = entry?.estado || 'Pendiente';
+      }
+      
+      metaCacheRef.current.estados = { ...metaCacheRef.current.estados, ...estados };
+      setCierreEstados(prev => ({ ...prev, ...estados }));
+    } catch (error: any) {
+      if (error.name === 'AbortError') return;
+      
+      console.warn('[ESTADOS] Error loading estados:', error);
+      const estados: Record<string, string> = {};
+      for (const id of pendientes) estados[id] = 'Pendiente';
+      metaCacheRef.current.estados = { ...metaCacheRef.current.estados, ...estados };
+      setCierreEstados(prev => ({ ...prev, ...estados }));
+    } finally {
+      // Limpiar estados en proceso
+      pendientes.forEach(id => inFlightEstados.current.delete(id));
+    }
+  }, [executeWithRateLimit]);
+
+  // ==== Carga (con paginación de 10) ====
+  const fetchApprovedPage = useCallback(async (p: number, signal?: AbortSignal) => {
+    try {
+      const res = await executeWithRateLimit(() => listIncendios(p, PAGE_SIZE));
+      const items = (res as any)?.items ?? res ?? [];
+      return items as Incendio[];
+    } catch (error: any) {
+      if (error.name !== 'AbortError') {
+        throw error;
+      }
+      return [];
+    }
+  }, [executeWithRateLimit]);
+
+  const fetchPendingPage = useCallback(async (p: number, signal?: AbortSignal) => {
+    try {
+      const pag = await executeWithRateLimit(() => listIncendiosSinAprobar({ page: p, pageSize: PAGE_SIZE }));
+      return (pag?.items ?? []) as Incendio[];
+    } catch (error: any) {
+      if (error.name !== 'AbortError') {
+        throw error;
+      }
+      return [];
+    }
+  }, [executeWithRateLimit]);
+
+  // Función específica para cargar TODOS los items (secuencialmente)
+  const fetchAllPage = useCallback(async (p: number, signal?: AbortSignal) => {
+    try {
+      // Cargar aprobados primero
+      const approved = await fetchApprovedPage(p, signal);
+      
+      // Pequeña pausa para evitar rate limiting
+      await new Promise(resolve => setTimeout(resolve, 800));
+      
+      // Luego cargar pendientes
+      const pending = await fetchPendingPage(p, signal);
+      
+      // Combinar y ordenar
+      const combined = [...approved, ...pending];
+      const unique = Array.from(new Map(combined.map(item => [getId(item), item])).values());
+      
+      // Ordenar por fecha (más reciente primero)
+      unique.sort((a, b) => {
+        const wa = getWhen(a) ? new Date(getWhen(a) as any).getTime() : 0;
+        const wb = getWhen(b) ? new Date(getWhen(b) as any).getTime() : 0;
+        return wb - wa;
+      });
+      
+      // Tomar solo PAGE_SIZE elementos
+      return unique.slice(0, PAGE_SIZE);
+    } catch (error: any) {
+      if (error.name !== 'AbortError') {
+        throw error;
+      }
+      return [];
+    }
+  }, [fetchApprovedPage, fetchPendingPage]);
 
   const reportError = useCallback((err: unknown, fallback = 'No se pudieron cargar los incidentes. Intenta de nuevo.') => {
     const anyErr = err as any;
+    
+    // Ignorar errores de abort
+    if (anyErr?.name === 'AbortError') return;
+    
     const status = anyErr?.response?.status;
     const retryAfter = anyErr?.response?.headers?.['retry-after'];
 
@@ -97,7 +304,6 @@ export default function IncendiosList() {
       url: anyErr?.config?.url,
       method: anyErr?.config?.method,
       retryAfter,
-      data: anyErr?.response?.data,
       message: anyErr?.message,
     });
 
@@ -108,12 +314,10 @@ export default function IncendiosList() {
       fallback;
 
     if (status === 429) {
-      console.warn('[LISTA][RATE_LIMIT]', { retryAfter, url: anyErr?.config?.url });
       const seconds = Number(retryAfter);
       msg = seconds && Number.isFinite(seconds)
-        ? `Demasiadas solicitudes. Inténtalo de nuevo en ${seconds} s.`
+        ? `Demasiadas solicitudes. Inténtalo de nuevo en ${seconds} segundos.`
         : 'Demasiadas solicitudes. Espera un momento e inténtalo de nuevo.';
-      scheduleRetry(Number.isFinite(seconds) ? Number(seconds) * 1000 : 3000);
     } else if (status === 503) {
       msg = 'Servicio temporalmente no disponible. Inténtalo más tarde.';
     } else if (status === 502) {
@@ -123,137 +327,208 @@ export default function IncendiosList() {
     }
 
     setErrorMsg(String(msg));
-  }, [scheduleRetry]);
-
-  const fetchApproved = useCallback(async () => {
-    const arr = await listIncendios(1, 50); // aprobados
-    return arr || [];
   }, []);
 
-  const fetchPending = useCallback(async () => {
-    const pag = await listIncendiosSinAprobar({ page: 1, pageSize: 50 });
-    return pag.items || [];
-  }, []);
+  const mergeUnique = (arrA: any[], arrB: any[]) => {
+    const map = new Map<string, any>();
+    [...arrA, ...arrB].forEach((it) => map.set(getId(it), it));
+    return Array.from(map.values());
+  };
 
-  // carga estados de cierre para el conjunto actual
-  const loadCierreEstados = useCallback(async (arr: Incendio[]) => {
-    const ids = Array.from(new Set(arr.map((it) => String((it as any).id ?? (it as any).incendio_uuid))));
-    if (!ids.length) return;
-
-    const acc: Record<string, string> = {};
-    await Promise.all(
-      ids.map(async (id) => {
-        try {
-          const c = await getCierre(id);
-          if (c && typeof c.estado_cierre === 'string') {
-            acc[id] = c.estado_cierre;
-          } else {
-            const sc = c?.secuencia_control || {};
-            const estado = sc?.extinguido_at
-              ? 'Extinguido'
-              : sc?.controlado_at
-              ? 'Controlado'
-              : (sc?.llegada_medios_terrestres_at || sc?.llegada_medios_aereos_at)
-              ? 'En atención'
-              : 'Pendiente';
-            acc[id] = estado;
-          }
-        } catch (e) {
-          acc[id] = acc[id] || 'Pendiente';
-          const ae = e as any;
-          console.warn('[LISTA][getCierre] fallo id', id, ae?.response?.status ?? ae);
-        }
-      })
-    );
-
-    setCierreEstados((prev) => ({ ...prev, ...acc }));
-  }, []);
-
-  const safeLoad = useCallback(async () => {
-    const now = Date.now();
-    if (loadingRef.current || now - lastLoadRef.current < 800) return;
-
+  const loadPage = useCallback(async (p: number, reset = false) => {
+    if (loadingRef.current) return;
+    
+    // Cancelar request anterior
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+    
     loadingRef.current = true;
-    setRefreshing(true);
     try {
-      const u = await getUser();
-      setUser(u);
+      const u = user ?? (await getUser().catch(() => null));
+      if (!user) setUser(u);
       const admin = isAdminUser(u);
-
+      
+      // al entrar por primera vez, si admin → por defecto NO_APROBADOS
       if (admin && !initRef.current) {
         initRef.current = true;
         setAprobFilter((prev) => (prev === 'ALL' ? 'NO_APROBADOS' : prev));
+        return; // Salir aquí, el efecto se volverá a ejecutar con el nuevo filtro
       }
 
-      let current: Incendio[] = [];
+      let pageItems: Incendio[] = [];
+      
       if (!admin) {
-        current = await fetchApproved();
-      } else if (aprobFilter === 'NO_APROBADOS') {
-        current = await fetchPending();
+        // no admin → solo aprobados
+        pageItems = await fetchApprovedPage(p, abortController.signal);
       } else if (aprobFilter === 'APROBADOS') {
-        current = await fetchApproved();
+        pageItems = await fetchApprovedPage(p, abortController.signal);
+      } else if (aprobFilter === 'NO_APROBADOS') {
+        pageItems = await fetchPendingPage(p, abortController.signal);
       } else {
-        const [approved, pending] = await Promise.all([fetchApproved(), fetchPending()]);
-        const map = new Map<string, Incendio>();
-        [...pending, ...approved].forEach((it) => map.set(String((it as any).id ?? (it as any).incendio_uuid), it));
-        current = Array.from(map.values());
+        // ALL: usar la nueva función que carga secuencialmente
+        pageItems = await fetchAllPage(p, abortController.signal);
       }
 
-      setItems(current);
-      await loadCierreEstados(current);
+      // Verificar si el request fue cancelado
+      if (abortController.signal.aborted) return;
+
+      // set de items + dedupe global
+      const next = reset ? pageItems : mergeUnique(items, pageItems);
+      
+      // ordena por actualizado/creado desc
+      next.sort((a, b) => {
+        const wa = getWhen(a) ? new Date(getWhen(a) as any).getTime() : 0;
+        const wb = getWhen(b) ? new Date(getWhen(b) as any).getTime() : 0;
+        return wb - wa;
+      });
+
+      setItems(next);
+      setHasMore(pageItems.length === PAGE_SIZE);
+
+      // estados y covers para lo nuevo
+      await fetchEstadosBatch(pageItems);
+
+      // pre-hidratar solo primeros 6 covers para mejor rendimiento
+      next.slice(0, 6).forEach(i => resolveCover(getId(i), i));
 
       setErrorMsg('');
-      lastLoadRef.current = Date.now();
     } catch (e) {
-      setItems([]);
-      reportError(e, 'No se pudieron cargar los incidentes. Intenta de nuevo.');
+      if (abortController.signal.aborted) return;
+      
+      if (reset) setItems([]);
+      reportError(e);
+    } finally {
+      if (!abortController.signal.aborted) {
+        loadingRef.current = false;
+      }
+    }
+  }, [aprobFilter, fetchApprovedPage, fetchPendingPage, fetchAllPage, fetchEstadosBatch, items, reportError, resolveCover, user]);
+
+  // primera carga - con dependencias controladas
+  useEffect(() => {
+    loadPage(1, true);
+    setPage(1);
+    
+    return () => {
+      // Cleanup: cancelar requests pendientes al desmontar
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      if (scrollEndTimerRef.current) {
+        clearTimeout(scrollEndTimerRef.current);
+      }
+    };
+  }, [aprobFilter]); // Solo dependencia de aprobFilter
+
+  // al volver al foco - con prevención de doble ejecución
+  useFocusEffect(
+    useCallback(() => {
+      let isActive = true;
+      
+      const refreshData = async () => {
+        if (!isActive) return;
+        
+        // Pequeño delay para evitar conflictos con carga inicial
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        if (!isActive) return;
+        
+        metaCacheRef.current.estados = {};
+        metaCacheRef.current.covers = {};
+        setCierreEstados({});
+        setCovers({});
+        await loadPage(1, true);
+        setPage(1);
+      };
+
+      refreshData();
+
+      return () => {
+        isActive = false;
+      };
+    }, [loadPage])
+  );
+
+  const onRefresh = useCallback(async () => {
+    if (refreshing) return;
+    
+    setRefreshing(true);
+    try {
+      // Cancelar requests pendientes
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      
+      metaCacheRef.current.estados = {};
+      metaCacheRef.current.covers = {};
+      setCierreEstados({});
+      setCovers({});
+      await loadPage(1, true);
+      setPage(1);
     } finally {
       setRefreshing(false);
-      loadingRef.current = false;
     }
-  }, [aprobFilter, fetchApproved, fetchPending, loadCierreEstados, reportError]);
+  }, [loadPage, refreshing]);
 
-  // primera carga + al cambiar filtros
-  useEffect(() => { safeLoad(); }, [safeLoad]);
-
-  // al volver al foco de esta pantalla
-  useFocusEffect(useCallback(() => { safeLoad(); }, [safeLoad]));
-
-  // estados únicos para el menú (derivados de los items visibles)
-  const estadosUnicos = useMemo(() => {
-    const set = new Set<string>();
-    for (const it of items) {
-      const nombre = String(it?.estadoActual?.estado?.nombre || '').trim();
-      if (nombre) set.add(nombre);
+  const onEndReached = useCallback(async () => {
+    const now = Date.now();
+    const timeSinceLastEndReached = now - lastEndReachedTimeRef.current;
+    
+    // Prevenir múltiples llamadas rápidas durante el scroll
+    if (timeSinceLastEndReached < 2000) { // 2 segundos mínimo entre paginaciones
+      return;
     }
-    const arr = Array.from(set).sort((a, b) => a.localeCompare(b));
-    return ['TODOS', ...arr];
-  }, [items]);
+    
+    if (!hasMore || loadingRef.current || refreshing || isScrollingRef.current) return;
+    
+    lastEndReachedTimeRef.current = now;
+    const next = page + 1;
+    await loadPage(next);
+    setPage(next);
+  }, [hasMore, page, loadPage, refreshing]);
 
-  // aplica búsqueda y filtros locales
+  // Estados disponibles (desde cierreEstados de items visibles)
+  const estadosDisponibles = useMemo(() => {
+    const ids = items.map(getId).filter(Boolean);
+    const list = ids.map(id => cierreEstados[id]).filter(Boolean);
+    return Array.from(new Set(list));
+  }, [items, cierreEstados]);
+
+  // aplica búsqueda y filtro por estados dinámicos
   const data = useMemo(() => {
     const s = q.trim().toLowerCase();
 
     return (items || []).filter((it) => {
-      if (estadoFilter !== 'TODOS') {
-        const nombre = String(it?.estadoActual?.estado?.nombre || '').trim();
-        if (nombre !== estadoFilter) return false;
-      }
+      const id = getId(it);
+      const estado = cierreEstados[id] || 'Pendiente';
+
+      if (selectedEstados.length && !selectedEstados.includes(estado)) return false;
 
       if (s) {
         const regionNombre =
-          typeof it.region === 'object' && it.region
-            ? (it.region as any).nombre || ''
-            : typeof it.region === 'string'
-            ? it.region
+          typeof (it as any).region === 'object' && (it as any).region
+            ? ((it as any).region as any).nombre || ''
+            : typeof (it as any).region === 'string'
+            ? (it as any).region
             : '';
-        const txt = `${it.titulo || ''} ${it.descripcion || ''} ${regionNombre}`.toLowerCase();
+        const txt = `${(it as any).titulo || ''} ${(it as any).descripcion || ''} ${regionNombre}`.toLowerCase();
         if (!txt.includes(s)) return false;
       }
 
       return true;
     });
-  }, [items, q, estadoFilter]);
+  }, [items, q, selectedEstados, cierreEstados]);
+
+  // Handler para cambio de filtro con reset
+  const handleAprobFilterChange = useCallback((newFilter: AprobadoFilter) => {
+    setAprobFilter(newFilter);
+    setPage(1);
+    setItems([]); // Limpiar items inmediatamente para mejor UX
+  }, []);
 
   return (
     <View style={styles.container}>
@@ -285,7 +560,7 @@ export default function IncendiosList() {
         <Chip
           style={styles.chip}
           selected={aprobFilter === 'ALL'}
-          onPress={() => setAprobFilter('ALL')}
+          onPress={() => { handleAprobFilterChange('ALL'); }}
           icon="filter-variant"
         >
           {`Aprobación: ${aprobFilter === 'ALL' ? 'Todos' : aprobFilter === 'APROBADOS' ? 'Aprobados' : 'No aprobados'}`}
@@ -293,50 +568,55 @@ export default function IncendiosList() {
         <Chip
           style={styles.chipSmall}
           selected={aprobFilter === 'APROBADOS'}
-          onPress={() => setAprobFilter('APROBADOS')}
+          onPress={() => { handleAprobFilterChange('APROBADOS'); }}
         >
           Aprobados
         </Chip>
         <Chip
           style={styles.chipSmall}
           selected={aprobFilter === 'NO_APROBADOS'}
-          onPress={() => setAprobFilter('NO_APROBADOS')}
+          onPress={() => { handleAprobFilterChange('NO_APROBADOS'); }}
         >
           No aprobados
         </Chip>
 
-        {/* Estado (menú) */}
+        {/* Estado (menú dinámico) */}
         <Menu
-          visible={estadoMenuVisible}
-          onDismiss={() => setEstadoMenuVisible(false)}
+          visible={estadoFilterMenu}
+          onDismiss={() => setEstadoFilterMenu(false)}
           anchor={
             <Chip
               style={styles.chip}
-              onPress={() => setEstadoMenuVisible(true)}
+              onPress={() => setEstadoFilterMenu(true)}
               icon="flag"
-              selected={estadoFilter !== 'TODOS'}
+              selected={selectedEstados.length > 0}
             >
-              {`Estado: ${estadoFilter}`}
+              {selectedEstados.length ? `Estados (${selectedEstados.length})` : 'Estados: Todos'}
             </Chip>
           }
         >
-          {estadosUnicos.map((nombre, i) => (
+          {estadosDisponibles.map((nombre, i) => (
             <React.Fragment key={nombre || `opt_${i}`}>
               {i > 0 ? <Divider /> : null}
               <Menu.Item
                 onPress={() => {
-                  setEstadoFilter(nombre);
-                  setEstadoMenuVisible(false);
+                  setSelectedEstados(prev => {
+                    const set = new Set(prev);
+                    if (set.has(nombre)) set.delete(nombre);
+                    else set.add(nombre);
+                    return Array.from(set);
+                  });
                 }}
                 title={nombre || '—'}
+                trailingIcon={selectedEstados.includes(nombre) ? 'check' : undefined}
               />
             </React.Fragment>
           ))}
           <Divider />
-          <View style={{ paddingHorizontal: 8, paddingVertical: 6 }}>
-            <Button onPress={() => { setEstadoFilter('TODOS'); setEstadoMenuVisible(false); }}>
-              Limpiar estado
-            </Button>
+          <View style={{ paddingHorizontal: 8, paddingVertical: 6, flexDirection: 'row', gap: 8 }}>
+            <Button onPress={() => { setSelectedEstados([]); setEstadoFilterMenu(false); }}>Limpiar</Button>
+            <View style={{ flex: 1 }} />
+            <Button mode="contained" onPress={() => setEstadoFilterMenu(false)}>Aplicar</Button>
           </View>
         </Menu>
       </View>
@@ -345,30 +625,36 @@ export default function IncendiosList() {
       <View style={styles.headerRow}>
         <Text style={styles.title}>Listado</Text>
         <Text style={styles.rightHeader}>
-          {items.length ? `Total: ${data.length}/${items.length}` : 'Última actualización'}
+          {items.length ? `Mostrando ${data.length} de ${items.length}` : '—'}
         </Text>
       </View>
 
       {/* Lista */}
       <FlatList
         data={data}
-        keyExtractor={(x) => String((x as any).id ?? (x as any).incendio_uuid)}
+        keyExtractor={(x) => getId(x)}
         ItemSeparatorComponent={() => <View style={styles.sep} />}
         contentContainerStyle={{ paddingBottom: 24 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={safeLoad} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        onEndReached={onEndReached}
+        onEndReachedThreshold={0.8} // Mayor threshold para cargar antes
+        onScrollBeginDrag={handleScrollBegin}
+        onScrollEndDrag={handleScrollEnd}
+        onMomentumScrollBegin={handleScrollBegin}
+        onMomentumScrollEnd={handleScrollEnd}
+        onViewableItemsChanged={onViewableItemsChanged.current}
+        viewabilityConfig={viewabilityConfig.current}
         renderItem={({ item }) => {
-          const itemId = String((item as any).id ?? (item as any).incendio_uuid);
-          const updatedAt =
-            (item as any).creadoEn ||
-            (item as any).fechaInicio ||
-            item.estadoActual?.fecha ||
-            null;
-          const aprobado = (item as any)?.aprobado === true;
+          const itemId = getId(item);
+          const updatedAt = getWhen(item);
+          const aprobado = (item as any)?.aprobado === true || (item as any)?.requiere_aprobacion === false;
 
-          const estadoCierre = cierreEstados[itemId];
-          const flame = cierreColor(estadoCierre);
+          const estado = cierreEstados[itemId] || 'Pendiente';
+          const flame = cierreColor(estado);
 
-          const thumb = pickThumb(item);
+          const cached = covers[itemId] || metaCacheRef.current.covers[itemId] || null;
+          const direct = pickDirectThumbFields(item);
+          const thumb = cached || (direct ? encodeURI(direct) : null);
 
           return (
             <TouchableOpacity
@@ -390,19 +676,19 @@ export default function IncendiosList() {
 
               <View style={styles.middle}>
                 <Text numberOfLines={1} style={styles.rowTitle}>
-                  {item.titulo || 'Sin título'}
+                  {(item as any).titulo || 'Sin título'}
                 </Text>
 
                 <Text numberOfLines={2} style={styles.rowSub}>
-                  {item.descripcion?.trim() || 'Sin descripción'}
+                  {(item as any).descripcion?.trim() || 'Sin descripción'}
                 </Text>
 
                 <View style={{ flexDirection: 'row', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
                   <Text style={[styles.badgeMini, aprobado ? styles.badgeOk : styles.badgeWarn]}>
                     {aprobado ? 'Aprobado' : 'No aprobado'}
                   </Text>
-                  <Text style={[styles.badgeMini, cierreBadgeStyle(estadoCierre)]}>
-                    {estadoCierre ? `Estado: ${estadoCierre}` : 'Cierre: —'}
+                  <Text style={[styles.badgeMini, cierreBadgeStyle(estado)]}>
+                    {estado ? `Estado: ${estado}` : 'Cierre: —'}
                   </Text>
                 </View>
               </View>
@@ -417,8 +703,15 @@ export default function IncendiosList() {
         }}
         ListEmptyComponent={
           <View style={{ paddingTop: 32, alignItems: 'center' }}>
-            <Text>No hay incidentes</Text>
+            <Text>{loadingRef.current ? 'Cargando...' : 'No hay incidentes'}</Text>
           </View>
+        }
+        ListFooterComponent={
+          hasMore ? (
+            <View style={{ paddingVertical: 16, alignItems: 'center' }}>
+              <Text style={{ color: '#666' }}>Cargando más…</Text>
+            </View>
+          ) : null
         }
       />
 

@@ -10,8 +10,8 @@ import GlobalToast from '@/components/GlobalToast';
 import GlobalLoader from '@/components/GlobalLoader';
 
 // --- push notif
-import * as Notifications from 'expo-notifications';
-import { registerForPushIfNeeded } from '@/services/register';
+//import * as Notifications from 'expo-notifications';
+//import { registerForPushIfNeeded } from '@/services/register';
 
 LogBox.ignoreLogs(['useInsertionEffect must not schedule updates']);
 
@@ -24,7 +24,7 @@ const theme = {
   },
 };
 
-// Mostrar notificación aunque la app esté en foreground (opcional)
+/* Mostrar notificación aunque la app esté en foreground (opcional)
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -34,15 +34,14 @@ Notifications.setNotificationHandler({
     shouldShowBanner: true,
     shouldShowList: true,
   }),
-});
+});*/
 
 export default function RootLayout() {
   const router = useRouter();
 
-  // TODO: Reemplaza por tu fuente real de auth (usuario_uuid del backend)
   const userId: string | null = null;
 
-  // Crear canal Android "default"
+  /* Crear canal Android "default"
   useEffect(() => {
     if (Platform.OS === 'android') {
       Notifications.setNotificationChannelAsync('default', {
@@ -50,9 +49,9 @@ export default function RootLayout() {
         importance: Notifications.AndroidImportance.MAX,
       }).catch(() => {});
     }
-  }, []);
+  }, []);*/
 
-  // Navegar cuando el usuario toca una notificación
+  /* Navegar cuando el usuario toca una notificación
   useEffect(() => {
     const sub = Notifications.addNotificationResponseReceivedListener(
       (response: Notifications.NotificationResponse) => {
@@ -84,7 +83,7 @@ export default function RootLayout() {
     registerForPushIfNeeded({ userId }).catch((e: unknown) =>
       console.warn('registerForPushIfNeeded error', e)
     );
-  }, [userId]);
+  }, [userId]);*/
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>

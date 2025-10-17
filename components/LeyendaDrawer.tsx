@@ -28,6 +28,36 @@ type LegendItem = {
   colors?: string[];
 };
 
+// Función para obtener colores específicos
+const getEstadoColor = (estado: string): string => {
+  switch (estado) {
+    case 'Pendiente':
+      return '#F44336'; // Rojo
+    case 'En atención':
+      return '#FF9800'; // Naranja
+    case 'Extinguido':
+      return '#4CAF50'; // Verde
+    case 'Detectado':
+      return '#FF5722'; // Naranja oscuro
+    case 'En verificación':
+      return '#FFC107'; // Amarillo
+    case 'Activo':
+      return '#F44336'; // Rojo
+    case 'Controlado':
+      return '#2196F3'; // Azul
+    case 'Liquidado':
+      return '#4CAF50'; // Verde
+    case 'Cerrado':
+      return '#9E9E9E'; // Gris
+    case 'Falso positivo':
+      return '#607D8B'; // Gris azulado
+    case 'Reactivado':
+      return '#E91E63'; // Rosa
+    default:
+      return '#9E9E9E'; // Gris por defecto
+  }
+};
+
 const Dot = ({ color }: { color: string }) => (
   <View style={styles.dotWrap}>
     <View style={[styles.dotCore, { backgroundColor: color }]} />
@@ -44,13 +74,15 @@ const GradientRow = ({ colors }: { colors: string[] }) => (
 
 export const LeyendaDrawer = ({ animation, statesInUse = [], getColor }: LeyendaDrawerProps) => {
   const ORDER = [
+    'Pendiente',        // Nuevo - Rojo
+    'En atención',      // Nuevo - Naranja  
+    'Extinguido',       // Nuevo - Verde
     'Detectado',
     'En verificación',
     'Activo',
     'Controlado',
     'Liquidado',
     'Cerrado',
-    'Pendiente',
     'Falso positivo',
     'Reactivado',
   ];
@@ -60,23 +92,25 @@ export const LeyendaDrawer = ({ animation, statesInUse = [], getColor }: Leyenda
 
   const ordered = source.length
     ? ORDER.filter(s => source.includes(s))
-    : [];
+    : ORDER; // Mostrar todos si no hay estados en uso
 
   const stateLegends: LegendItem[] = ordered.map(s => ({
     title: s,
     description:
+      s === 'Pendiente' ? 'Incendio reportado, pendiente de atención.' :
+      s === 'En atención' ? 'Equipos trabajando en el incendio.' :
+      s === 'Extinguido' ? 'Incendio completamente apagado.' :
       s === 'Detectado' ? 'Incendio reportado recientemente.' :
       s === 'En verificación' ? 'Validación en curso.' :
       s === 'Activo' ? 'Incendio confirmado y en desarrollo.' :
       s === 'Controlado' ? 'Confinado; bajo observación.' :
       s === 'Liquidado' ? 'Extinguido por completo.' :
       s === 'Cerrado' ? 'Cierre administrativo.' :
-      s === 'Pendiente' ? 'Sin estado definido aún.' :
       s === 'Falso positivo' ? 'No hubo incendio real.' :
       s === 'Reactivado' ? 'Reavivamiento de un evento.' :
       '',
     kind: 'dot',
-    color: typeof getColor === 'function' ? getColor(s) : '#9E9E9E',
+    color: typeof getColor === 'function' ? getColor(s) : getEstadoColor(s),
   }));
 
   const legends: LegendItem[] = [

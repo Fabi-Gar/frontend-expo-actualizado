@@ -34,8 +34,8 @@ import { useFirmsGT } from '../hooks/useFirmsGT';
 import { useMapRegion } from '../hooks/useMapRegion';
 import { getLatLngFromIncendio, probabilityFromConfidence, probabilityLabel } from '@/app/utils/map';
 import { isAdminUser } from './utils/roles';
-
 import { cierreColor } from '@/app/utils/cierre';
+import { getFirstPhotoUrlByIncendio } from '@/services/photos';
 
 const AS_HEATMAP = 'heatmap';
 
@@ -144,7 +144,7 @@ export default function Mapa() {
     const now = Date.now();
     if (now - lastReloadRef.current < 2000 || reloadingRef.current) return;
     reloadingRef.current = true;
-       try {
+    try {
       await reloadRef.current();
       lastReloadRef.current = Date.now();
       resetRetryBackoff();
@@ -198,7 +198,16 @@ export default function Mapa() {
     return msg;
   }, [scheduleRetry, safeReload]);
 
-  useFocusEffect(useCallback(() => { safeReload(); }, [safeReload]));
+  const isMountedRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (isMountedRef.current) {
+        safeReload();
+      } else {
+        isMountedRef.current = true;
+      }
+    }, [safeReload])
+  );
 
   useEffect(() => {
     if (!items?.length) return;
@@ -209,8 +218,8 @@ export default function Mapa() {
 
   const [cierreEstados, setCierreEstados] = useState<Record<string, string>>({});
   const [reportantes, setReportantes] = useState<Record<string, string>>({});
-  const metaCacheRef = useRef<{ estados: Record<string,string>, reportantes: Record<string,string> }>({
-    estados: {}, reportantes: {},
+  const metaCacheRef = useRef<{ estados: Record<string,string>, reportantes: Record<string,string>, covers: Record<string,string> }>({
+    estados: {}, reportantes: {}, covers: {},
   });
   const abortersRef = useRef<Map<string, AbortController>>(new Map());
   const inFlightRepRef = useRef<Map<string, Promise<void>>>(new Map());
@@ -238,13 +247,34 @@ export default function Mapa() {
       setCierreEstados(prev => ({ ...prev, ...estados }));
     }
   }, []);
-  useEffect(() => { if (items?.length) fetchEstadosBatch(items as any[]); }, [items, fetchEstadosBatch]);
+
+  const fetchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!items?.length) return;
+    if (fetchTimeoutRef.current) {
+      clearTimeout(fetchTimeoutRef.current);
+    }
+    fetchTimeoutRef.current = setTimeout(() => {
+      fetchEstadosBatch(items as any[]);
+    }, 300);
+    return () => {
+      if (fetchTimeoutRef.current) {
+        clearTimeout(fetchTimeoutRef.current);
+      }
+    };
+  }, [items, fetchEstadosBatch]);
 
   const ensureReportante = useCallback(async (id: string, item: any) => {
-    if (!id || metaCacheRef.current.reportantes[id]) return;
+    if (!id) return;
+    if (metaCacheRef.current.reportantes[id]) {
+      return;
+    }
     const existing = inFlightRepRef.current.get(id);
-    if (existing) { await existing; return; }
-
+    if (existing) {
+      await existing;
+      return;
+    }
     const ctrl = new AbortController();
     abortersRef.current.set(id, ctrl);
     const p = (async () => {
@@ -263,7 +293,12 @@ export default function Mapa() {
           setReportantes(prev => ({ ...prev, [id]: name }));
           return;
         }
-      } catch {}
+      } catch (err: any) {
+        if (err.name === 'AbortError' || err.name === 'CanceledError') {
+          return;
+        }
+        console.warn('[ensureReportante] Error:', err);
+      }
       const u = item?.creado_por || item?.creadoPor || null;
       const by = [u?.nombre, u?.apellido].filter(Boolean).join(' ') || u?.email || '';
       if (by) {
@@ -272,12 +307,44 @@ export default function Mapa() {
       }
     })();
     inFlightRepRef.current.set(id, p);
-    try { await p; } finally {
+    try {
+      await p;
+    } finally {
       inFlightRepRef.current.delete(id);
       abortersRef.current.delete(id);
     }
   }, []);
+
   useEffect(() => () => { abortersRef.current.forEach(c => c.abort()); abortersRef.current.clear(); }, []);
+
+  const ensureCoverUrl = useCallback(async (incendioId: string, item: any): Promise<string | null> => {
+    if (!incendioId) return null;
+    const direct =
+      item?.portadaUrl ||
+      item?.foto_portada_url ||
+      item?.thumbnailUrl ||
+      item?.fotos?.[0]?.url ||
+      null;
+    if (typeof direct === 'string' && direct.trim()) {
+      const normalized = encodeURI(direct);
+      metaCacheRef.current.covers[incendioId] = normalized;
+      return normalized;
+    }
+    if (metaCacheRef.current.covers[incendioId]) {
+      return metaCacheRef.current.covers[incendioId];
+    }
+    try {
+      const url = await getFirstPhotoUrlByIncendio(incendioId);
+      if (url && typeof url === 'string') {
+        const normalized = encodeURI(url);
+        metaCacheRef.current.covers[incendioId] = normalized;
+        return normalized;
+      }
+    } catch (e) {
+      console.log('[ensureCoverUrl] error', e);
+    }
+    return null;
+  }, []);
 
   const firstAutoFitDoneRef = useRef(false);
   useEffect(() => {
@@ -299,8 +366,7 @@ export default function Mapa() {
   const handleMenuNavigate = (route: string) => {
     if ( route === 'Logout') { closeMenu(); return; }
     if (route === 'Mi Usuario') { closeMenu(); router.push('/mi-usuario'); return; }
-        if (route === 'notificaciones') { closeMenu(); router.push('/notificaciones'); return; }
-
+    if (route === 'notificaciones') { closeMenu(); router.push('/notificaciones'); return; }
     if (route === 'Reportes') { closeMenu(); router.push('/incendios/reportes'); return; }
     if (route === 'listaIncendios') { closeMenu(); router.push('/incendios/listaIncendios'); return; }
     if (route === 'Catalogo Incendio') { closeMenu(); router.push('/admin/catalogos'); return; }
@@ -372,34 +438,41 @@ export default function Mapa() {
         const estado = cierreEstados[id] || 'Pendiente';
         const color = cierreColor(estado);
 
-        const handleMarkerPress = async () => {
-          const point = await mapRef.current?.pointForCoordinate(coord as LatLng);
-          const pt = point || { x: screen.width / 2, y: screen.height / 2 };
+    const handleMarkerPress = async () => {
+      const point = await mapRef.current?.pointForCoordinate(coord as LatLng);
+      const pt = point || { x: screen.width / 2, y: screen.height / 2 };
 
-          await ensureReportante(id, item);
+      await ensureReportante(id, item);
 
-          const cover = getCoverUrl(item as any);
+      // 1) abrir tarjeta ya (con placeholder si no hay cover)
+      debounceTap(() => setPreview({ id, item, pt }));
 
-          if (cover) {
-            debounceTap(() =>
-              setViewer({ visible: true, urls: [cover], index: 0 })
-            );
-            return;
+      // 2) si no hay cover aún, intenta resolverla y fuerza re-render de la tarjeta
+      const cached = metaCacheRef.current.covers[id] || getCoverUrl(item as any);
+      if (!cached) {
+        try {
+          const resolved = await ensureCoverUrl(id, item);
+          if (resolved) {
+            setPreview(prev => (prev && prev.id === id ? { ...prev } : prev));
           }
+        } catch {}
+      }
+    };
 
-          debounceTap(() => setPreview({ id, item, pt }));
-        };
 
-        return (
-          <Marker
-            key={id}
-            coordinate={coord}
-            pinColor={color}
-            zIndex={9999}
-            onPress={handleMarkerPress}
-            anchor={{ x: 0.5, y: 1 }}
-          />
-        );
+
+      return (
+        <Marker
+          key={`${id}-${estado}`}          
+          coordinate={coord}
+          pinColor={color}
+          tracksViewChanges={true}
+          zIndex={9999}
+          onPress={handleMarkerPress}
+          anchor={{ x: 0.5, y: 1 }}
+        />
+      );
+
       })}
     </>
   );
@@ -410,9 +483,20 @@ export default function Mapa() {
     if (items?.length) await fetchEstadosBatch(items as any[]);
   }, [items, fetchEstadosBatch]);
 
+  const isRefreshingRef = useRef(false);
+
   const handleRefresh = useCallback(async () => {
-    await safeReload();
-    await refetchEstadosAll();
+    if (isRefreshingRef.current) {
+      console.log('[handleRefresh] Ya hay un refresh en progreso, ignorando...');
+      return;
+    }
+    isRefreshingRef.current = true;
+    try {
+      await safeReload();
+      await refetchEstadosAll();
+    } finally {
+      isRefreshingRef.current = false;
+    }
   }, [safeReload, refetchEstadosAll]);
 
   return (
@@ -479,12 +563,14 @@ export default function Mapa() {
             const u = (item as any).creado_por || (item as any).creadoPor || null;
             return [u?.nombre, u?.apellido].filter(Boolean).join(' ') || u?.email || 'Anónimo';
           })();
-        const cover =
+        const coverRaw =
+          metaCacheRef.current.covers[id] ||
           (item as any)?.portadaUrl ||
           (item as any)?.foto_portada_url ||
           (item as any)?.thumbnailUrl ||
           (item as any)?.fotos?.[0]?.url ||
           null;
+        const cover = coverRaw ? encodeURI(String(coverRaw)) : null;
 
         const CARD_W = 260, CARD_H = 210;
         const left = Math.max(8, Math.min(pt.x - CARD_W / 2, screen.width - CARD_W - 8));

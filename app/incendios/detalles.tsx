@@ -1,5 +1,5 @@
 // app/incendios/detalles.tsx
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { View, StyleSheet, ScrollView, TouchableOpacity, Share, Alert, Image } from 'react-native';
 import { Text, Button, Divider } from 'react-native-paper';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -13,10 +13,12 @@ import { subscribe, EVENTS } from '@/hooks/events';
 import { showToast } from '@/hooks/uiStore';
 
 import CierreEditor from '@/components/CierreEditor';
+// NUEVO: mismo helper usado en el mapa para resolver portada
+import { getFirstPhotoUrlByIncendio } from '@/services/photos';
 
 type Tab = 'ACT' | 'REP' | 'INFO';
 
-// --- helper para portada ---
+// --- helper para portada directa (si viene en el payload) ---
 const getCoverUrl = (it: any, ultimo?: any): string | null =>
   it?.portadaUrl ||
   it?.foto_portada_url ||
@@ -42,6 +44,14 @@ export default function DetalleIncendio() {
 
   const [editorVisible, setEditorVisible] = useState(false);
 
+  // Gateo de UI: no mostrar hasta que datos + imagen estén listos (o timeout)
+  const [dataReady, setDataReady] = useState(false);
+  const [imageReady, setImageReady] = useState(false);
+
+  // Cache local para portadas resueltas y estado de portada final
+  const metaCacheRef = useRef<{ covers: Record<string, string> }>({ covers: {} });
+  const [resolvedCover, setResolvedCover] = useState<string | null>(null);
+
   useEffect(() => { (async () => { try { setUser(await getUser()); } catch {} })(); }, []);
 
   const isAdmin: boolean = user?.is_admin === true;
@@ -50,6 +60,7 @@ export default function DetalleIncendio() {
     if (!id) return;
     try {
       setLoading(true);
+      setDataReady(false);
 
       const data = await getIncendio(String(id));
       setItem(data);
@@ -75,6 +86,7 @@ export default function DetalleIncendio() {
       showToast({ type: 'error', message: e?.response?.data?.error || 'No se pudo cargar el incendio' });
     } finally {
       setLoading(false);
+      setDataReady(true);
     }
   }, [id]);
 
@@ -189,13 +201,118 @@ export default function DetalleIncendio() {
     try { await Share.share({ message: msg }); } catch {}
   };
 
-  // --- portada calculada ---
+  // --- portada calculada directa (si viene en payload) ---
   const coverUrl = useMemo(() => getCoverUrl(item, ultimoReporte), [item, ultimoReporte]);
+
+  // Igual que en Mapa: resolver portada con caché y servicio
+  const ensureCoverUrl = useCallback(async (incendioId: string, base: any): Promise<string | null> => {
+    if (!incendioId) return null;
+
+    // 1) direct fields
+    const direct =
+      base?.portadaUrl ||
+      base?.foto_portada_url ||
+      base?.thumbnailUrl ||
+      base?.fotos?.[0]?.url ||
+      null;
+    if (typeof direct === 'string' && direct.trim()) {
+      const normalized = encodeURI(direct);
+      metaCacheRef.current.covers[incendioId] = normalized;
+      return normalized;
+    }
+
+    // 2) cache
+    if (metaCacheRef.current.covers[incendioId]) {
+      return metaCacheRef.current.covers[incendioId];
+    }
+
+    // 3) service
+    try {
+      const url = await getFirstPhotoUrlByIncendio(incendioId);
+      if (url && typeof url === 'string') {
+        const normalized = encodeURI(url);
+        metaCacheRef.current.covers[incendioId] = normalized;
+        return normalized;
+      }
+    } catch (e) {
+      console.log('[ensureCoverUrl] error', e);
+    }
+    return null;
+  }, []);
+
+  // Resolver portada final (prioriza coverUrl; si no hay, usa servicio)
+  useEffect(() => {
+    let cancelled = false;
+    setResolvedCover(null);
+
+    const go = async () => {
+      const incendioId =
+        String(
+          (item as any)?.id ??
+          (item as any)?.incendio_uuid ??
+          (ultimoReporte as any)?.incendio_uuid ??
+          ''
+        );
+
+      if (!incendioId) {
+        setResolvedCover(coverUrl ? encodeURI(coverUrl) : null);
+        return;
+      }
+
+      const direct = coverUrl ? encodeURI(coverUrl) : null;
+      const url = direct || (await ensureCoverUrl(incendioId, item || ultimoReporte || {}));
+      if (!cancelled) setResolvedCover(url || null);
+    };
+
+    go();
+    return () => { cancelled = true; };
+  }, [item, ultimoReporte, coverUrl, ensureCoverUrl]);
+
+  // Prefetch con timeout (no bloquea indefinidamente)
+  const prefetchWithTimeout = useCallback(async (url: string, ms = 5000) => {
+    try {
+      const ok = await Promise.race<boolean>([
+        Image.prefetch(url).then(() => true).catch(() => false),
+        new Promise<boolean>(resolve => setTimeout(() => resolve(false), ms)),
+      ]);
+      return ok;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  // Gateo de imagen: esperamos a que haya resolvedCover (o no haya) + prefetch/timeout
+  useEffect(() => {
+    let cancelled = false;
+    setImageReady(false);
+
+    if (!resolvedCover) {
+      // no hay portada → no bloquea UI
+      setImageReady(true);
+      return;
+    }
+
+    (async () => {
+      await prefetchWithTimeout(resolvedCover, 5000);
+      if (!cancelled) setImageReady(true);
+    })();
+
+    return () => { cancelled = true; };
+  }, [resolvedCover, prefetchWithTimeout]);
+
+  // Gateo global
+  if (!dataReady || !imageReady) {
+    return (
+      <View style={styles.loading}>
+        <Text>Cargando…</Text>
+      </View>
+    );
+  }
 
   if (!item) {
     return (
       <View style={styles.loading}>
-        <Text>{loading ? 'Cargando...' : 'Sin datos'}</Text>
+        <Text>Sin datos</Text>
       </View>
     );
   }
@@ -462,7 +579,7 @@ export default function DetalleIncendio() {
           <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
             <Ionicons name="arrow-back" size={24} color="#333" />
           </TouchableOpacity>
-          <Text style={styles.pageTitle}>Detalles del incendio</Text>
+        <Text style={styles.pageTitle}>Detalles del incendio</Text>
           <View style={{ width: 24 }} />
         </View>
 
@@ -479,6 +596,16 @@ export default function DetalleIncendio() {
               <Text style={styles.link}>Editar</Text>
             </TouchableOpacity>
           )}
+        </View>
+
+        {/* Portada/compartible */}
+        <View style={{ marginTop: 8 }}>
+          <Image
+            source={resolvedCover ? { uri: resolvedCover } : require('@/assets/images/placeholder_incendio.png')}
+            style={{ width: '100%', height: 200, borderRadius: 12, backgroundColor: '#eee' }}
+            resizeMode="cover"
+            onError={() => setResolvedCover(null)} // fallback al placeholder si falla
+          />
         </View>
 
         {/* KPIs del último reporte */}
@@ -500,8 +627,8 @@ export default function DetalleIncendio() {
           {(item as any).creadoEn || (item as any).creado_en ? ` • ${new Date(((item as any).creadoEn || (item as any).creado_en)).toLocaleString()}` : ''}
         </Text>
 
-        {/* Aprobación / Rechazo o Imagen para compartir */}
-        {(!isAprobado && puedeModerarse) ? (
+        {/* Aprobación / Rechazo */}
+        {(!isAprobado && puedeModerarse) && (
           <View style={{ flexDirection: 'row', gap: 10 }}>
             <Button mode="contained" style={[styles.mainBtn, { backgroundColor: '#2E7D32' }]}
               onPress={async () => { try { await aprobarIncendio(String(id)); await refetch(); showToast({ type: 'success', message: 'Incendio aprobado' }); } catch { Alert.alert('Error', 'No se pudo aprobar'); } }}>
@@ -511,15 +638,6 @@ export default function DetalleIncendio() {
               onPress={async () => { try { await rechazarIncendio(String(id), 'Revisión: no aprobado'); await refetch(); showToast({ type: 'info', message: 'Incendio rechazado' }); } catch { Alert.alert('Error', 'No se pudo rechazar'); } }}>
               Rechazar
             </Button>
-          </View>
-        ) : (
-          <View style={{ marginTop: 8 }}>
-
-              <Image
-                source={coverUrl ? { uri: coverUrl } : require('@/assets/images/placeholder_incendio.png')}
-                style={{ width: '100%', height: 200, borderRadius: 12, backgroundColor: '#eee' }}
-                resizeMode="cover"
-              />
           </View>
         )}
 
