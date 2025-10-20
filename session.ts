@@ -30,3 +30,19 @@ export async function getUser<T = any>() {
 export async function clearUser() { await removeItem(USER_KEY) }
 
 export async function logout() { await clearToken(); await clearUser() }
+
+// Para detectar tokens expirados ANTES de hacer peticiones al backend
+export async function isTokenValid() {
+  const token = await getToken();
+  if (!token) return false;
+  
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    const exp = payload.exp * 1000; 
+    const now = Date.now();
+    
+    return now < exp;
+  } catch {
+    return false;
+  }
+}

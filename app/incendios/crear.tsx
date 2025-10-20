@@ -30,7 +30,7 @@ import MapPickerModal from '@/components/MapPickerModal';
 import SingleSelectModal from '@/components/SelectorModals/SingleSelectModal';
 
 import { listCatalogoItems, listDepartamentos, listMunicipios } from '@/services/catalogos';
-import { createIncendioWithReporteFormData } from '@/services/incendios'; // Cambiar a FormData
+import { createIncendioWithReporteFormData } from '@/services/incendios';
 
 type Option = { id: string; label: string };
 
@@ -69,6 +69,9 @@ export default function CrearIncendioConReporte() {
   const router = useRouter();
   const { lat: pLat, lng: pLng } = useLocalSearchParams<{ lat?: string; lng?: string }>();
 
+  // Control de montaje
+  const isMountedRef = useRef(true);
+
   // Catálogos
   const [medios, setMedios] = useState<Option[]>([]);
   const [deptos, setDeptos] = useState<Option[]>([]);
@@ -95,6 +98,9 @@ export default function CrearIncendioConReporte() {
   // Evitar doble carga en dev (StrictMode/Expo)
   const didInitRef = useRef(false);
 
+  // AbortController para municipios
+  const muniAbortRef = useRef<AbortController | null>(null);
+
   // ===== Refs para navegación entre inputs =====
   const descRef = useRef<any>(null);
   const telRef = useRef<any>(null);
@@ -102,7 +108,7 @@ export default function CrearIncendioConReporte() {
   const lugarRef = useRef<any>(null);
   const fincaRef = useRef<any>(null);
 
-  // ===== Helpers de error (amigable + log técnico) =====
+  // ===== Helpers de error (amigable + log técnico) - Estable =====
   const reportError = useCallback((err: unknown, fallback = 'Ocurrió un error') => {
     const e: any = err || {};
     const status = e?.response?.status;
@@ -138,7 +144,7 @@ export default function CrearIncendioConReporte() {
     }
 
     Alert.alert('Error', String(msg));
-  }, []);
+  }, []); // Sin dependencias para estabilidad
 
   // Elegir foto (opcional)
   const pickImage = useCallback(async () => {
@@ -148,22 +154,28 @@ export default function CrearIncendioConReporte() {
         Alert.alert('Permisos', 'Necesitamos acceso a tus fotos para adjuntar la imagen.');
         return;
       }
+
       const result = await ImagePicker.launchImageLibraryAsync({
         allowsMultipleSelection: false,
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         quality: 1,
         exif: false,
       });
-      if (result.canceled) return;
+
+      if (result.canceled || !isMountedRef.current) return;
+
       const asset = result.assets?.[0];
       if (!asset?.uri) return;
 
-      setPickedImage({
-        uri: asset.uri,
-        fileName: asset.fileName || `foto_${Date.now()}.jpg`,
-        mimeType: asset.mimeType || 'image/jpeg',
-      });
+      if (isMountedRef.current) {
+        setPickedImage({
+          uri: asset.uri,
+          fileName: asset.fileName || `foto_${Date.now()}.jpg`,
+          mimeType: asset.mimeType || 'image/jpeg',
+        });
+      }
     } catch (e) {
+      console.error('[pickImage] Error:', e);
       reportError(e, 'No se pudo seleccionar la imagen');
     }
   }, [reportError]);
@@ -176,12 +188,15 @@ export default function CrearIncendioConReporte() {
     didInitRef.current = true;
 
     const ac = new AbortController();
+    let isActive = true;
 
     (async () => {
       try {
         const net = await NetInfo.fetch();
         if (!(net.isConnected && net.isInternetReachable)) {
-          Alert.alert('Sin conexión', 'Conéctate a internet para cargar los catálogos.');
+          if (isActive && isMountedRef.current) {
+            Alert.alert('Sin conexión', 'Conéctate a internet para cargar los catálogos.');
+          }
         }
 
         const [mediosResp, deptosResp] = await Promise.all([
@@ -189,29 +204,41 @@ export default function CrearIncendioConReporte() {
           listDepartamentos(ac.signal),
         ]);
 
-        if (ac.signal.aborted) return;
+        if (!isActive || ac.signal.aborted || !isMountedRef.current) return;
 
-        setMedios((mediosResp.items || []).map((m: any) => ({ id: String(m.id), label: m.nombre })));
-        setDeptos((deptosResp || []).map((d: any) => ({ id: String(d.id), label: d.nombre })));
+        const mediosData = (mediosResp.items || []).map((m: any) => ({ 
+          id: String(m.id), 
+          label: m.nombre 
+        }));
+        
+        const deptosData = (deptosResp || []).map((d: any) => ({ 
+          id: String(d.id), 
+          label: d.nombre 
+        }));
+
+        setMedios(mediosData);
+        setDeptos(deptosData);
 
         seedRef.current = {
           titulo: '',
           descripcion: '',
           lat: pLat ? String(pLat) : '',
           lng: pLng ? String(pLng) : '',
-
           medioId: null,
           deptoId: null,
           muniId: null,
-
           telefono: '',
           observaciones: '',
           lugarPoblado: '',
           finca: '',
         };
-      } catch (e) {
-        if (ac.signal.aborted) return;
+      } catch (e: any) {
+        if (ac.signal.aborted || !isActive || !isMountedRef.current) return;
+
+        console.error('[CREAR][init] Error cargando catálogos:', e);
         reportError(e, 'No se pudieron cargar catálogos');
+
+        // Seed con valores por defecto
         seedRef.current = {
           titulo: '',
           descripcion: '',
@@ -226,48 +253,103 @@ export default function CrearIncendioConReporte() {
           finca: '',
         };
       } finally {
-        if (!ac.signal.aborted) setInitLoading(false);
+        if (isActive && isMountedRef.current) {
+          setInitLoading(false);
+        }
       }
     })();
 
-    return () => ac.abort();
-  }, [pLat, pLng, reportError]);
+    return () => {
+      isActive = false;
+      ac.abort();
+    };
+  }, [pLat, pLng]); // reportError NO en dependencias (es estable)
 
   /* ============================
    * Municipios dependientes
    * ============================ */
   const muniReqIdRef = useRef(0);
+  
   const loadMunicipios = useCallback(async (deptoId?: string | null) => {
     muniReqIdRef.current += 1;
     const reqId = muniReqIdRef.current;
 
+    // Cancelar request anterior
+    if (muniAbortRef.current) {
+      muniAbortRef.current.abort();
+    }
+
     if (!deptoId) {
-      setMunis([]);
+      if (isMountedRef.current) {
+        setMunis([]);
+      }
       return;
     }
 
     const ac = new AbortController();
+    muniAbortRef.current = ac;
+
     try {
       const arr = await listMunicipios(String(deptoId), ac.signal);
-      if (ac.signal.aborted || reqId !== muniReqIdRef.current) return;
-      setMunis((arr || []).map((m: any) => ({ id: String(m.id), label: m.nombre })));
-    } catch (e) {
-      if (ac.signal.aborted || reqId !== muniReqIdRef.current) return;
-      console.warn('[CREAR][municipios] fallo', e);
-      setMunis([]);
-      Alert.alert('Aviso', 'No se pudieron cargar municipios para el departamento seleccionado.');
+      
+      if (ac.signal.aborted || reqId !== muniReqIdRef.current || !isMountedRef.current) {
+        return;
+      }
+
+      const munisData = (arr || []).map((m: any) => ({ 
+        id: String(m.id), 
+        label: m.nombre 
+      }));
+
+      setMunis(munisData);
+    } catch (e: any) {
+      if (ac.signal.aborted || reqId !== muniReqIdRef.current || !isMountedRef.current) {
+        return;
+      }
+
+      console.warn('[CREAR][municipios] Error:', e);
+      
+      if (isMountedRef.current) {
+        setMunis([]);
+        Alert.alert('Aviso', 'No se pudieron cargar municipios para el departamento seleccionado.');
+      }
+    } finally {
+      if (muniAbortRef.current === ac) {
+        muniAbortRef.current = null;
+      }
     }
+  }, []);
+
+  // Cleanup al desmontar
+  useEffect(() => {
+    isMountedRef.current = true;
+
+    return () => {
+      isMountedRef.current = false;
+
+      // Cancelar request de municipios si existe
+      if (muniAbortRef.current) {
+        muniAbortRef.current.abort();
+        muniAbortRef.current = null;
+      }
+    };
   }, []);
 
   // Submit con FormData
   const handleSubmitCreate = async (values: FormValues) => {
+    if (!isMountedRef.current) return;
+
     try {
-      setLoading(true);
+      if (isMountedRef.current) {
+        setLoading(true);
+      }
 
       const net = await NetInfo.fetch();
       if (!(net.isConnected && net.isInternetReachable)) {
-        Alert.alert('Sin conexión', 'Conéctate a internet para guardar.');
-        setLoading(false);
+        if (isMountedRef.current) {
+          Alert.alert('Sin conexión', 'Conéctate a internet para guardar.');
+          setLoading(false);
+        }
         return;
       }
 
@@ -275,37 +357,55 @@ export default function CrearIncendioConReporte() {
       const lonN = Number(values.lng);
 
       if (!Number.isFinite(latN) || !Number.isFinite(lonN)) {
-        Alert.alert('Revisa', 'Coordenadas inválidas');
+        if (isMountedRef.current) {
+          Alert.alert('Revisa', 'Coordenadas inválidas');
+          setLoading(false);
+        }
         return;
       }
+
       if (!values.medioId) {
-        Alert.alert('Revisa', 'Selecciona el medio del reporte');
+        if (isMountedRef.current) {
+          Alert.alert('Revisa', 'Selecciona el medio del reporte');
+          setLoading(false);
+        }
         return;
       }
 
       // Preparar FormData
       const formData = new FormData();
       
-      // Datos del incendio y reporte como JSON
-      const payload = {
-        titulo: values.titulo.trim(),
-        descripcion: values.descripcion?.trim() || null,
-        centroide: { type: 'Point' as const, coordinates: [lonN, latN] as [number, number] },
-        reporte: {
-          medio_uuid: String(values.medioId),
-          ubicacion: { type: 'Point' as const, coordinates: [lonN, latN] as [number, number] },
-          reportado_en: new Date().toISOString(),
-          observaciones: values.observaciones?.trim() || null,
-          telefono: values.telefono?.trim() || null,
-          departamento_uuid: values.deptoId || null,
-          municipio_uuid: values.muniId || null,
-          lugar_poblado: values.lugarPoblado?.trim() || null,
-          finca: values.finca?.trim() || null,
-        },
-      };
+      try {
+        // Datos del incendio y reporte como JSON
+        const payload = {
+          titulo: values.titulo.trim(),
+          descripcion: values.descripcion?.trim() || null,
+          centroide: { 
+            type: 'Point' as const, 
+            coordinates: [lonN, latN] as [number, number] 
+          },
+          reporte: {
+            medio_uuid: String(values.medioId),
+            ubicacion: { 
+              type: 'Point' as const, 
+              coordinates: [lonN, latN] as [number, number] 
+            },
+            reportado_en: new Date().toISOString(),
+            observaciones: values.observaciones?.trim() || null,
+            telefono: values.telefono?.trim() || null,
+            departamento_uuid: values.deptoId || null,
+            municipio_uuid: values.muniId || null,
+            lugar_poblado: values.lugarPoblado?.trim() || null,
+            finca: values.finca?.trim() || null,
+          },
+        };
 
-      formData.append('incendio', JSON.stringify(payload));
-      formData.append('reporte', JSON.stringify(payload.reporte));
+        formData.append('incendio', JSON.stringify(payload));
+        formData.append('reporte', JSON.stringify(payload.reporte));
+      } catch (e) {
+        console.error('[CREAR] Error preparando FormData:', e);
+        throw new Error('Error al preparar los datos');
+      }
 
       // Agregar foto si existe (comprimida)
       if (pickedImage?.uri) {
@@ -316,28 +416,63 @@ export default function CrearIncendioConReporte() {
             { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
           );
 
-          formData.append('file', {
-            uri: manipulated.uri,
-            name: pickedImage.fileName || `foto_${Date.now()}.jpg`,
-            type: 'image/jpeg',
-          } as any);
+          if (isMountedRef.current) {
+            formData.append('file', {
+              uri: manipulated.uri,
+              name: pickedImage.fileName || `foto_${Date.now()}.jpg`,
+              type: 'image/jpeg',
+            } as any);
+          }
         } catch (e) {
-          console.error('[CREAR] compresión de foto falló', e);
-          Alert.alert('Aviso', 'No se pudo procesar la imagen, se creará sin foto');
+          console.error('[CREAR] compresión de foto falló:', e);
+          if (isMountedRef.current) {
+            Alert.alert('Aviso', 'No se pudo procesar la imagen, se creará sin foto');
+          }
         }
       }
 
       // Usar el servicio FormData
       const result = await createIncendioWithReporteFormData(formData);
 
-      Alert.alert('Listo', `Incendio creado ${pickedImage ? 'con foto' : 'sin foto'}`);
-      router.replace('/mapa');
+      if (!isMountedRef.current) return;
+
+      Alert.alert(
+        'Listo', 
+        `Incendio creado ${pickedImage ? 'con foto' : 'sin foto'}`,
+        [
+          {
+            text: 'OK',
+            onPress: () => {
+              if (isMountedRef.current) {
+                router.replace('/mapa');
+              }
+            }
+          }
+        ]
+      );
     } catch (e: any) {
-      reportError(e, 'No se pudo guardar');
+      console.error('[handleSubmitCreate] Error:', e);
+      if (isMountedRef.current) {
+        reportError(e, 'No se pudo guardar');
+      }
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
   };
+
+  // Helper seguro para obtener nombre por ID
+  const nameById = useCallback((arr: Option[], id?: string | null): string => {
+    try {
+      if (!id || !arr || !Array.isArray(arr)) return '';
+      const found = arr.find((x) => String(x.id) === String(id));
+      return found?.label ?? '';
+    } catch (error) {
+      console.error('[nameById] Error:', error);
+      return '';
+    }
+  }, []);
 
   if (initLoading || !seedRef.current) {
     return (
@@ -348,15 +483,18 @@ export default function CrearIncendioConReporte() {
     );
   }
 
-  const nameById = (arr: Option[], id?: string | null) =>
-    id ? (arr.find((x) => String(x.id) === String(id))?.label ?? '') : '';
-
   const seed = seedRef.current;
 
   return (
     <View style={{ flex: 1 }}>
       <Appbar.Header mode="small">
-        <Appbar.BackAction onPress={() => router.back()} />
+        <Appbar.BackAction onPress={() => {
+          try {
+            router.back();
+          } catch (error) {
+            console.error('[Back button] Error:', error);
+          }
+        }} />
         <Appbar.Content title="Nuevo incendio" />
       </Appbar.Header>
 
@@ -401,7 +539,13 @@ export default function CrearIncendioConReporte() {
                     style={styles.input}
                     error={!!(touched.titulo && errors.titulo)}
                     returnKeyType="next"
-                    onSubmitEditing={() => descRef.current?.focus()}
+                    onSubmitEditing={() => {
+                      try {
+                        descRef.current?.focus();
+                      } catch (error) {
+                        console.error('[titulo onSubmit] Error:', error);
+                      }
+                    }}
                   />
                   <HelperText type="error" visible={!!(touched.titulo && errors.titulo)}>
                     {errors.titulo as any}
@@ -429,7 +573,18 @@ export default function CrearIncendioConReporte() {
                         : ''
                     }
                     editable={false}
-                    right={<TextInput.Icon icon="map" onPress={() => setMapModal(true)} />}
+                    right={
+                      <TextInput.Icon 
+                        icon="map" 
+                        onPress={() => {
+                          try {
+                            setMapModal(true);
+                          } catch (error) {
+                            console.error('[map icon] Error:', error);
+                          }
+                        }} 
+                      />
+                    }
                     style={styles.input}
                     placeholder="Toca el icono de mapa para elegir"
                     error={!!errors.lat || !!errors.lng}
@@ -450,6 +605,7 @@ export default function CrearIncendioConReporte() {
                         await setFieldValue('lat', String(c.lat));
                         await setFieldValue('lng', String(c.lng));
                       } catch (e) {
+                        console.error('[getCurrentCoords] Error:', e);
                         reportError(e, 'No se pudo obtener tu ubicación');
                       }
                     }}
@@ -461,10 +617,14 @@ export default function CrearIncendioConReporte() {
                   <MapPickerModal
                     visible={mapModal}
                     onClose={() => setMapModal(false)}
-                    onConfirm={({ lat, lng }) => {
-                      void setFieldValue('lat', String(lat));
-                      void setFieldValue('lng', String(lng));
-                      setMapModal(false);
+                    onConfirm={async ({ lat, lng }) => {
+                      try {
+                        await setFieldValue('lat', String(lat));
+                        await setFieldValue('lng', String(lng));
+                        setMapModal(false);
+                      } catch (error) {
+                        console.error('[MapPickerModal onConfirm] Error:', error);
+                      }
                     }}
                     initial={{
                       lat: values.lat ? Number(values.lat) : undefined,
@@ -480,7 +640,18 @@ export default function CrearIncendioConReporte() {
                     label="Medio"
                     value={nameById(medios, values.medioId)}
                     editable={false}
-                    right={<TextInput.Icon icon="menu-down" onPress={() => setMedioModal(true)} />}
+                    right={
+                      <TextInput.Icon 
+                        icon="menu-down" 
+                        onPress={() => {
+                          try {
+                            setMedioModal(true);
+                          } catch (error) {
+                            console.error('[medio icon] Error:', error);
+                          }
+                        }} 
+                      />
+                    }
                     style={styles.input}
                     error={!!(touched.medioId && errors.medioId)}
                     placeholder="Toca para seleccionar"
@@ -494,7 +665,18 @@ export default function CrearIncendioConReporte() {
                     label="Departamento"
                     value={nameById(deptos, values.deptoId)}
                     editable={false}
-                    right={<TextInput.Icon icon="menu-down" onPress={() => setDeptoModal(true)} />}
+                    right={
+                      <TextInput.Icon 
+                        icon="menu-down" 
+                        onPress={() => {
+                          try {
+                            setDeptoModal(true);
+                          } catch (error) {
+                            console.error('[depto icon] Error:', error);
+                          }
+                        }} 
+                      />
+                    }
                     style={styles.input}
                     placeholder="Toca para seleccionar"
                   />
@@ -508,11 +690,15 @@ export default function CrearIncendioConReporte() {
                       <TextInput.Icon
                         icon="menu-down"
                         onPress={() => {
-                          if (!values.deptoId) {
-                            Alert.alert('Atención', 'Primero elige un departamento');
-                            return;
+                          try {
+                            if (!values.deptoId) {
+                              Alert.alert('Atención', 'Primero elige un departamento');
+                              return;
+                            }
+                            setMuniModal(true);
+                          } catch (error) {
+                            console.error('[muni icon] Error:', error);
                           }
-                          setMuniModal(true);
                         }}
                       />
                     }
@@ -531,7 +717,13 @@ export default function CrearIncendioConReporte() {
                     returnKeyType="next"
                     textContentType="telephoneNumber"
                     autoComplete="tel"
-                    onSubmitEditing={() => obsRef.current?.focus()}
+                    onSubmitEditing={() => {
+                      try {
+                        obsRef.current?.focus();
+                      } catch (error) {
+                        console.error('[tel onSubmit] Error:', error);
+                      }
+                    }}
                   />
 
                   <TextInput
@@ -544,7 +736,13 @@ export default function CrearIncendioConReporte() {
                     multiline
                     returnKeyType="next"
                     blurOnSubmit
-                    onSubmitEditing={() => lugarRef.current?.focus()}
+                    onSubmitEditing={() => {
+                      try {
+                        lugarRef.current?.focus();
+                      } catch (error) {
+                        console.error('[obs onSubmit] Error:', error);
+                      }
+                    }}
                   />
 
                   <TextInput
@@ -555,7 +753,13 @@ export default function CrearIncendioConReporte() {
                     onBlur={handleBlur('lugarPoblado')}
                     style={styles.input}
                     returnKeyType="next"
-                    onSubmitEditing={() => fincaRef.current?.focus()}
+                    onSubmitEditing={() => {
+                      try {
+                        fincaRef.current?.focus();
+                      } catch (error) {
+                        console.error('[lugar onSubmit] Error:', error);
+                      }
+                    }}
                   />
 
                   <TextInput
@@ -566,7 +770,13 @@ export default function CrearIncendioConReporte() {
                     onBlur={handleBlur('finca')}
                     style={styles.input}
                     returnKeyType="done"
-                    onSubmitEditing={() => handleSubmit()}
+                    onSubmitEditing={() => {
+                      try {
+                        handleSubmit();
+                      } catch (error) {
+                        console.error('[finca onSubmit] Error:', error);
+                      }
+                    }}
                   />
 
                   {/* Foto opcional */}
@@ -578,12 +788,27 @@ export default function CrearIncendioConReporte() {
                         style={{ width: '100%', height: 180, borderRadius: 8, backgroundColor: '#eee' }}
                         resizeMode="cover"
                       />
-                      <Button mode="text" onPress={() => setPickedImage(null)} style={{ marginTop: 4 }}>
+                      <Button 
+                        mode="text" 
+                        onPress={() => {
+                          try {
+                            setPickedImage(null);
+                          } catch (error) {
+                            console.error('[Quitar foto] Error:', error);
+                          }
+                        }} 
+                        style={{ marginTop: 4 }}
+                      >
                         Quitar foto
                       </Button>
                     </View>
                   ) : (
-                    <Button mode="outlined" icon="image-plus" onPress={pickImage} style={{ marginBottom: 8 }}>
+                    <Button 
+                      mode="outlined" 
+                      icon="image-plus" 
+                      onPress={pickImage} 
+                      style={{ marginBottom: 8 }}
+                    >
                       Elegir imagen
                     </Button>
                   )}
@@ -592,7 +817,13 @@ export default function CrearIncendioConReporte() {
                   <View style={styles.actions}>
                     <Button
                       mode="outlined"
-                      onPress={() => router.replace('/mapa')}
+                      onPress={() => {
+                        try {
+                          router.replace('/mapa');
+                        } catch (error) {
+                          console.error('[Cancelar] Error:', error);
+                        }
+                      }}
                       disabled={loading}
                       style={styles.btnCancel}
                     >
@@ -601,7 +832,13 @@ export default function CrearIncendioConReporte() {
 
                     <Button
                       mode="contained"
-                      onPress={() => handleSubmit()}
+                      onPress={() => {
+                        try {
+                          handleSubmit();
+                        } catch (error) {
+                          console.error('[Guardar] Error:', error);
+                        }
+                      }}
                       loading={loading}
                       disabled={loading}
                       style={styles.btnSave}
@@ -616,8 +853,12 @@ export default function CrearIncendioConReporte() {
                     title="Selecciona medio"
                     options={medios}
                     value={values.medioId}
-                    onSelect={(id) => {
-                      void setFieldValue('medioId', (id as string) ?? null);
+                    onSelect={async (id) => {
+                      try {
+                        await setFieldValue('medioId', (id as string) ?? null);
+                      } catch (error) {
+                        console.error('[medio onSelect] Error:', error);
+                      }
                     }}
                     onClose={() => setMedioModal(false)}
                     allowClear={false}
@@ -629,9 +870,13 @@ export default function CrearIncendioConReporte() {
                     options={deptos}
                     value={values.deptoId}
                     onSelect={async (id) => {
-                      void setFieldValue('deptoId', (id as string) ?? null);
-                      void setFieldValue('muniId', null);
-                      await loadMunicipios(id as string);
+                      try {
+                        await setFieldValue('deptoId', (id as string) ?? null);
+                        await setFieldValue('muniId', null);
+                        await loadMunicipios(id as string);
+                      } catch (error) {
+                        console.error('[depto onSelect] Error:', error);
+                      }
                     }}
                     onClose={() => setDeptoModal(false)}
                     allowClear
@@ -642,7 +887,13 @@ export default function CrearIncendioConReporte() {
                     title="Selecciona municipio"
                     options={munis}
                     value={values.muniId}
-                    onSelect={(id) => void setFieldValue('muniId', (id as string) ?? null)}
+                    onSelect={async (id) => {
+                      try {
+                        await setFieldValue('muniId', (id as string) ?? null);
+                      } catch (error) {
+                        console.error('[muni onSelect] Error:', error);
+                      }
+                    }}
                     onClose={() => setMuniModal(false)}
                     allowClear
                   />

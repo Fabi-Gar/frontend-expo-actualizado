@@ -16,7 +16,10 @@ import {
   ActivityIndicator,
   Chip,
   Divider,
+  IconButton,
 } from 'react-native-paper';
+
+import { useRouter } from 'expo-router';
 import { Formik } from 'formik';
 import * as Yup from 'yup';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
@@ -61,7 +64,7 @@ export default function Perfil() {
   const [savingPass, setSavingPass] = useState(false);
   const [secureNew, setSecureNew] = useState(true);
   const [secureConfirm, setSecureConfirm] = useState(true);
-
+  const router = useRouter()
   // Refs para navegar entre campos
   const apellidoRef = useRef<any>(null);
   const emailRef = useRef<any>(null);
@@ -172,8 +175,16 @@ export default function Perfil() {
         extraScrollHeight={Platform.select({ ios: 24, android: 56 })}
         keyboardOpeningTime={0}
       >
-        <Text style={styles.title}>Mi perfil</Text>
-
+        <View style={styles.headerContainer}>
+          <IconButton
+            icon="arrow-left"
+            size={24}
+            onPress={() => router.back()}
+            style={styles.backButton}
+          />
+          <Text style={styles.title}>Mi perfil</Text>
+          <View style={{ width: 40 }} />
+        </View>
         {me && (
           <>
             <View style={styles.badgesRow}>
@@ -422,4 +433,20 @@ const styles = StyleSheet.create({
   buttonText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
   metaBox: { paddingHorizontal: 20, paddingBottom: 24 },
   metaText: { color: '#555', marginBottom: 4 },
+
+    headerContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 8,
+    paddingTop: 40,
+    marginBottom: 8,
+  },
+  backButton: {
+    margin: 0,
+  },
+  
+
+
 });
+

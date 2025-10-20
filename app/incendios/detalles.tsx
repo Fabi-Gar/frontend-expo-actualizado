@@ -1,6 +1,6 @@
 // app/incendios/detalles.tsx
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, Share, Alert, Image } from 'react-native';
+import { View, StyleSheet, ScrollView, TouchableOpacity, Alert, Image } from 'react-native';
 import { Text, Button, Divider } from 'react-native-paper';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -34,7 +34,7 @@ export default function DetalleIncendio() {
   const router = useRouter();
 
   const [item, setItem] = useState<Incendio | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [, setLoading] = useState(false);
   const [user, setUser] = useState<any>(null);
   const [tab, setTab] = useState<Tab>('ACT');
   const [cierre, setCierre] = useState<any>(null);
@@ -193,13 +193,6 @@ export default function DetalleIncendio() {
     ];
   }, [item, isAprobado]);
 
-  const onShare = async () => {
-    if (!item) return;
-    const lat = (item as any)?.lat ?? item?.ubicacion?.coordinates?.[1] ?? (item as any)?.centroide?.coordinates?.[1];
-    const lon = (item as any)?.lng ?? (item as any)?.lon ?? item?.ubicacion?.coordinates?.[0] ?? (item as any)?.centroide?.coordinates?.[0];
-    const msg = `Incendio: ${item.titulo}\n${item.descripcion || ''}${(lat!=null && lon!=null) ? `\nUbicación: ${lat}, ${lon}` : ''}`;
-    try { await Share.share({ message: msg }); } catch {}
-  };
 
   // --- portada calculada directa (si viene en payload) ---
   const coverUrl = useMemo(() => getCoverUrl(item, ultimoReporte), [item, ultimoReporte]);

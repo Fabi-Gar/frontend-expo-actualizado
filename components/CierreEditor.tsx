@@ -164,7 +164,13 @@ function DateTimeField({
   const [tmp, setTmp] = useState<Date>(() => (iso ? new Date(iso) : new Date()));
 
   useEffect(() => {
-    if (iso) setTmp(new Date(iso));
+    if (iso) {
+      try {
+        setTmp(new Date(iso));
+      } catch (error) {
+        console.error('[DateTimeField] Error parsing ISO date:', error);
+      }
+    }
   }, [iso]);
 
   const open = () => setStep('date');
@@ -172,19 +178,29 @@ function DateTimeField({
 
   const onDatePicked = (_: DateTimePickerEvent, date?: Date) => {
     if (!date) { closeAll(); return; }
-    const d = new Date(tmp);
-    d.setFullYear(date.getFullYear(), date.getMonth(), date.getDate());
-    setTmp(d);
-    setStep('time');
+    try {
+      const d = new Date(tmp);
+      d.setFullYear(date.getFullYear(), date.getMonth(), date.getDate());
+      setTmp(d);
+      setStep('time');
+    } catch (error) {
+      console.error('[DateTimeField] Error setting date:', error);
+      closeAll();
+    }
   };
 
   const onTimePicked = (_: DateTimePickerEvent, date?: Date) => {
     if (!date) { closeAll(); return; }
-    const d = new Date(tmp);
-    d.setHours(date.getHours(), date.getMinutes(), date.getSeconds(), date.getMilliseconds());
-    setTmp(d);
-    onChangeISO(d.toISOString());
-    closeAll();
+    try {
+      const d = new Date(tmp);
+      d.setHours(date.getHours(), date.getMinutes(), date.getSeconds(), date.getMilliseconds());
+      setTmp(d);
+      onChangeISO(d.toISOString());
+      closeAll();
+    } catch (error) {
+      console.error('[DateTimeField] Error setting time:', error);
+      closeAll();
+    }
   };
 
   const clear = () => {
@@ -264,16 +280,31 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
   const [closing, setClosing] = useState(false);
   const [estadoCierre, setEstadoCierre] = useState<EstadoCierre>('Pendiente');
 
-  // 👇 nuevo: estado admin
+  // 👇 estado admin
   const [isAdmin, setIsAdmin] = useState(false);
+  
+  // 👇 PROTECCIÓN: solo carga una vez al montar
   useEffect(() => {
+    let mounted = true;
+    
     (async () => {
       try {
         const u = await getUser();
-        setIsAdmin(!!u?.is_admin);
-      } catch {}
+        if (mounted) {
+          setIsAdmin(!!u?.is_admin);
+        }
+      } catch (error) {
+        console.error('[CierreEditor] Error fetching user:', error);
+        if (mounted) {
+          setIsAdmin(false);
+        }
+      }
     })();
-  }, []);
+
+    return () => {
+      mounted = false;
+    };
+  }, []); // ⚠️ Sin dependencias - solo se ejecuta al montar
 
   // Catálogos
   const [tiposIncendio, setTiposIncendio] = useState<CatalogoItem[]>([]);
@@ -287,57 +318,64 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
   const [instituciones, setInstituciones] = useState<CatalogoItem[]>([]);
   const [tecnicasCat, setTecnicasCat] = useState<CatalogoItem[]>([]);
 
+  // 👇 PROTECCIÓN: useCallback sin dependencias innecesarias
   const fetchAllCatalogs = useCallback(async () => {
-    const [
-      catTiposIncendio,
-      catTiposPropiedad,
-      catCausas,
-      catIniciado,
-      catTerrestres,
-      catAereos,
-      catAcuaticos,
-      catAbastos,
-      catInstituciones,
-      catTecnicas,
-    ] = await Promise.all([
-      listCatalogoItems('tipos_incendio', { page: 1, pageSize: 200 }),
-      listCatalogoItems('tipo_propiedad', { page: 1, pageSize: 200 }),
-      listCatalogoItems('causas_catalogo', { page: 1, pageSize: 200 }),
-      listCatalogoItems('iniciado_junto_a_catalogo', { page: 1, pageSize: 200 }),
-      listCatalogoItems('medios_terrestres_catalogo', { page: 1, pageSize: 200 }),
-      listCatalogoItems('medios_aereos_catalogo', { page: 1, pageSize: 200 }),
-      listCatalogoItems('medios_acuaticos_catalogo', { page: 1, pageSize: 200 }),
-      listCatalogoItems('abastos_catalogo', { page: 1, pageSize: 200 }),
-      listCatalogoItems('instituciones', { page: 1, pageSize: 200 }),
-      listCatalogoItems('tecnicas_extincion_catalogo', { page: 1, pageSize: 200 }),
-    ]);
+    try {
+      const [
+        catTiposIncendio,
+        catTiposPropiedad,
+        catCausas,
+        catIniciado,
+        catTerrestres,
+        catAereos,
+        catAcuaticos,
+        catAbastos,
+        catInstituciones,
+        catTecnicas,
+      ] = await Promise.all([
+        listCatalogoItems('tipos_incendio', { page: 1, pageSize: 200 }),
+        listCatalogoItems('tipo_propiedad', { page: 1, pageSize: 200 }),
+        listCatalogoItems('causas_catalogo', { page: 1, pageSize: 200 }),
+        listCatalogoItems('iniciado_junto_a_catalogo', { page: 1, pageSize: 200 }),
+        listCatalogoItems('medios_terrestres_catalogo', { page: 1, pageSize: 200 }),
+        listCatalogoItems('medios_aereos_catalogo', { page: 1, pageSize: 200 }),
+        listCatalogoItems('medios_acuaticos_catalogo', { page: 1, pageSize: 200 }),
+        listCatalogoItems('abastos_catalogo', { page: 1, pageSize: 200 }),
+        listCatalogoItems('instituciones', { page: 1, pageSize: 200 }),
+        listCatalogoItems('tecnicas_extincion_catalogo', { page: 1, pageSize: 200 }),
+      ]);
 
-    const cats = {
-      tiposIncendio: catTiposIncendio.items ?? [],
-      tiposPropiedad: catTiposPropiedad.items ?? [],
-      causas: catCausas.items ?? [],
-      iniciadoJuntoA: catIniciado.items ?? [],
-      mediosTerrestres: catTerrestres.items ?? [],
-      mediosAereos: catAereos.items ?? [],
-      mediosAcuaticos: catAcuaticos.items ?? [],
-      abastos: catAbastos.items ?? [],
-      instituciones: catInstituciones.items ?? [],
-      tecnicasCat: catTecnicas.items ?? [],
-    };
+      const cats = {
+        tiposIncendio: catTiposIncendio.items ?? [],
+        tiposPropiedad: catTiposPropiedad.items ?? [],
+        causas: catCausas.items ?? [],
+        iniciadoJuntoA: catIniciado.items ?? [],
+        mediosTerrestres: catTerrestres.items ?? [],
+        mediosAereos: catAereos.items ?? [],
+        mediosAcuaticos: catAcuaticos.items ?? [],
+        abastos: catAbastos.items ?? [],
+        instituciones: catInstituciones.items ?? [],
+        tecnicasCat: catTecnicas.items ?? [],
+      };
 
-    setTiposIncendio(cats.tiposIncendio);
-    setTiposPropiedad(cats.tiposPropiedad);
-    setCausas(cats.causas);
-    setIniciadoJuntoA(cats.iniciadoJuntoA);
-    setMediosTerrestres(cats.mediosTerrestres);
-    setMediosAereos(cats.mediosAereos);
-    setMediosAcuaticos(cats.mediosAcuaticos);
-    setAbastos(cats.abastos);
-    setInstituciones(cats.instituciones);
-    setTecnicasCat(cats.tecnicasCat);
+      setTiposIncendio(cats.tiposIncendio);
+      setTiposPropiedad(cats.tiposPropiedad);
+      setCausas(cats.causas);
+      setIniciadoJuntoA(cats.iniciadoJuntoA);
+      setMediosTerrestres(cats.mediosTerrestres);
+      setMediosAereos(cats.mediosAereos);
+      setMediosAcuaticos(cats.mediosAcuaticos);
+      setAbastos(cats.abastos);
+      setInstituciones(cats.instituciones);
+      setTecnicasCat(cats.tecnicasCat);
 
-    return cats;
-  }, []);
+      return cats;
+    } catch (error) {
+      console.error('[fetchAllCatalogs] Error:', error);
+      Alert.alert('Error', 'No se pudieron cargar los catálogos');
+      throw error;
+    }
+  }, []); // ⚠️ Sin dependencias - la función es estable
 
   // Form
   const [tipoPrincipalId, setTipoPrincipalId] = useState<string | undefined>(undefined);
@@ -370,6 +408,7 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
   const [supFuera, setSupFuera] = useState<number | undefined>(undefined);
   const [supNombreAP, setSupNombreAP] = useState<string | undefined>(undefined);
 
+  // 👇 PROTECCIÓN: cálculo automático con effect
   useEffect(() => {
     const total =
       (typeof supDentro === 'number' ? supDentro : 0) +
@@ -415,14 +454,21 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
   const sumValues = (obj: Record<string, number>) =>
     Object.values(obj).reduce((acc, n) => acc + (Number.isFinite(n) ? Number(n) : 0), 0);
 
+  // 👇 PROTECCIÓN: reload con flag de montaje
   const reload = useCallback(async () => {
+    let mounted = true;
+    
     setLoading(true);
     try {
       const cats = await fetchAllCatalogs();
+      
+      if (!mounted) return; // Salir si el componente se desmontó
+      
       const c = await getCierre(incendioId);
 
-      setEstadoCierre(c.estado_cierre);
+      if (!mounted) return; // Verificar de nuevo después de la llamada async
 
+      setEstadoCierre(c.estado_cierre);
       setTipoPrincipalId(c?.tipo_incendio_principal?.id ?? undefined);
 
       const comp: Record<string, number> = {};
@@ -490,133 +536,149 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
       setVientoDir(c.meteo?.viento_dir ?? undefined);
 
       setNota('');
+    } catch (error) {
+      console.error('[reload] Error:', error);
+      Alert.alert('Error', 'No se pudo cargar la información del cierre');
     } finally {
-      setLoading(false);
-    }
-  }, [incendioId, fetchAllCatalogs]);
-
-  useEffect(() => {
-    if (visible) reload();
-  }, [visible, reload]);
-
-  const buildPayload = useCallback(() => {
-    const payload: any = {};
-
-    if (tipoPrincipalId) payload.tipo_incendio_principal_id = tipoPrincipalId;
-    if (compArray.length) payload.composicion_tipo = compArray;
-
-    if (topoPlano != null || topoOndulado != null || topoQuebrado != null) {
-      payload.topografia = {
-        ...(typeof topoPlano === 'number' ? { plano_pct: topoPlano } : {}),
-        ...(typeof topoOndulado === 'number' ? { ondulado_pct: topoOndulado } : {}),
-        ...(typeof topoQuebrado === 'number' ? { quebrado_pct: topoQuebrado } : {}),
-      };
-    }
-
-    const propArr = Object.entries(propSel).map(([tipo_propiedad_id, usado]) => ({ tipo_propiedad_id, usado }));
-    if (propArr.length) payload.propiedad = propArr;
-
-    if (iniciadoId || (iniciadoOtro && iniciadoOtro.length)) {
-      payload.iniciado_junto_a = {
-        ...(iniciadoId ? { iniciado_id: iniciadoId } : {}),
-        ...(typeof iniciadoOtro === 'string' ? { otro_texto: iniciadoOtro } : {}),
-      };
-    }
-
-    if (scTer || scAer || scCtrl || scExt) {
-      payload.secuencia_control = {
-        ...(scTer ? { llegada_medios_terrestres_at: scTer } : {}),
-        ...(scAer ? { llegada_medios_aereos_at: scAer } : {}),
-        ...(scCtrl ? { controlado_at: scCtrl } : {}),
-        ...(scExt ? { extinguido_at: scExt } : {}),
-      };
-    }
-
-    if (supTotal != null || supDentro != null || supFuera != null || (supNombreAP && supNombreAP.length)) {
-      payload.superficie = {
-        ...(typeof supTotal === 'number' ? { area_total_ha: supTotal } : {}),
-        ...(typeof supDentro === 'number' ? { dentro_ap_ha: supDentro } : {}),
-        ...(typeof supFuera === 'number' ? { fuera_ap_ha: supFuera } : {}),
-        ...(typeof supNombreAP === 'string' ? { nombre_ap: supNombreAP } : {}),
-      };
-    }
-
-    if (sv.length) payload.superficie_vegetacion = sv;
-
-    // === Técnicas: mapeo robusto y suma por slug ===
-    const tecBySlug: Record<TecnicaSlug, number> = {
-      directo: 0,
-      indirecto: 0,
-      control_natural: 0,
-    } as Record<TecnicaSlug, number>;
-
-    for (const [id, pct0] of Object.entries(tecById)) {
-      const pct = Number(pct0);
-      if (!Number.isFinite(pct) || pct <= 0) continue;
-      const nombre = tecnicasCat.find((t) => t.id === id)?.nombre;
-      const slug = tecnicaSlugFromNombre(nombre);
-        console.log('[BUILD_PAYLOAD][TECNICA]', { id, nombre, slug, pct }); // 👈 log clave
-
-      if (isTecnicaSlug(slug)) {
-        tecBySlug[slug] = (tecBySlug[slug] || 0) + pct;
+      if (mounted) {
+        setLoading(false);
       }
     }
 
+    return () => {
+      mounted = false;
+    };
+  }, [incendioId, fetchAllCatalogs]);
 
-    const tecArr = (Object.entries(tecBySlug) as [TecnicaSlug, number][])
-      .filter(([, pct]) => pct > 0)
-      .map(([slug, pct]) => ({ tecnica: slug, pct: Number(pct) }));
-
-    if (tecArr.length) payload.tecnicas = tecArr;
-    // === /Técnicas ===
-
-    const mtArr = Object.entries(medTerCant)
-      .filter(([_, c]) => Number(c) > 0)
-      .map(([medio_terrestre_id, cantidad]) => ({ medio_terrestre_id, cantidad: Number(cantidad) }));
-    if (mtArr.length) payload.medios_terrestres = mtArr;
-
-    const maArr = Object.entries(medAerPct)
-      .filter(([_, p]) => Number(p) > 0)
-      .map(([medio_aereo_id, pct]) => ({ medio_aereo_id, pct: Number(pct) }));
-    if (maArr.length) payload.medios_aereos = maArr;
-
-    const macArr = Object.entries(medAcuCant)
-      .filter(([_, c]) => Number(c) > 0)
-      .map(([medio_acuatico_id, cantidad]) => ({ medio_acuatico_id, cantidad: Number(cantidad) }));
-    if (macArr.length) payload.medios_acuaticos = macArr;
-
-    const instArr = Array.from(instSel).map((institucion_uuid) => ({ institucion_uuid }));
-    if (instArr.length) payload.medios_instituciones = instArr;
-
-    const abArr = Object.entries(abastoCant)
-      .filter(([_, c]) => Number(c) > 0)
-      .map(([abasto_id, cantidad]) => ({ abasto_id, cantidad: Number(cantidad) }));
-    if (abArr.length) payload.abastos = abArr;
-
-    if (causaId || (causaOtro && causaOtro.length)) {
-      payload.causa = {
-        ...(causaId ? { causa_id: causaId } : {}),
-        ...(typeof causaOtro === 'string' ? { otro_texto: causaOtro } : {}),
-      };
+  // 👇 PROTECCIÓN: solo recargar cuando el modal se abre
+  useEffect(() => {
+    if (visible) {
+      reload();
     }
+  }, [visible, reload]);
 
-    if (
-      typeof tempC === 'number' ||
-      typeof hrPct === 'number' ||
-      typeof vientoVel === 'number' ||
-      typeof vientoDir === 'string'
-    ) {
-      payload.meteo = {
-        ...(typeof tempC === 'number' ? { temp_c: tempC } : {}),
-        ...(typeof hrPct === 'number' ? { hr_pct: hrPct } : {}),
-        ...(typeof vientoVel === 'number' ? { viento_vel: vientoVel } : {}),
-        ...(typeof vientoDir === 'string' ? { viento_dir: vientoDir } : {}),
-      };
+  const buildPayload = useCallback(() => {
+    try {
+      const payload: any = {};
+
+      if (tipoPrincipalId) payload.tipo_incendio_principal_id = tipoPrincipalId;
+      if (compArray.length) payload.composicion_tipo = compArray;
+
+      if (topoPlano != null || topoOndulado != null || topoQuebrado != null) {
+        payload.topografia = {
+          ...(typeof topoPlano === 'number' ? { plano_pct: topoPlano } : {}),
+          ...(typeof topoOndulado === 'number' ? { ondulado_pct: topoOndulado } : {}),
+          ...(typeof topoQuebrado === 'number' ? { quebrado_pct: topoQuebrado } : {}),
+        };
+      }
+
+      const propArr = Object.entries(propSel).map(([tipo_propiedad_id, usado]) => ({ tipo_propiedad_id, usado }));
+      if (propArr.length) payload.propiedad = propArr;
+
+      if (iniciadoId || (iniciadoOtro && iniciadoOtro.length)) {
+        payload.iniciado_junto_a = {
+          ...(iniciadoId ? { iniciado_id: iniciadoId } : {}),
+          ...(typeof iniciadoOtro === 'string' ? { otro_texto: iniciadoOtro } : {}),
+        };
+      }
+
+      if (scTer || scAer || scCtrl || scExt) {
+        payload.secuencia_control = {
+          ...(scTer ? { llegada_medios_terrestres_at: scTer } : {}),
+          ...(scAer ? { llegada_medios_aereos_at: scAer } : {}),
+          ...(scCtrl ? { controlado_at: scCtrl } : {}),
+          ...(scExt ? { extinguido_at: scExt } : {}),
+        };
+      }
+
+      if (supTotal != null || supDentro != null || supFuera != null || (supNombreAP && supNombreAP.length)) {
+        payload.superficie = {
+          ...(typeof supTotal === 'number' ? { area_total_ha: supTotal } : {}),
+          ...(typeof supDentro === 'number' ? { dentro_ap_ha: supDentro } : {}),
+          ...(typeof supFuera === 'number' ? { fuera_ap_ha: supFuera } : {}),
+          ...(typeof supNombreAP === 'string' ? { nombre_ap: supNombreAP } : {}),
+        };
+      }
+
+      if (sv.length) payload.superficie_vegetacion = sv;
+
+      // === Técnicas: mapeo robusto y suma por slug ===
+      const tecBySlug: Record<TecnicaSlug, number> = {
+        directo: 0,
+        indirecto: 0,
+        control_natural: 0,
+      } as Record<TecnicaSlug, number>;
+
+      for (const [id, pct0] of Object.entries(tecById)) {
+        const pct = Number(pct0);
+        if (!Number.isFinite(pct) || pct <= 0) continue;
+        const nombre = tecnicasCat.find((t) => t.id === id)?.nombre;
+        const slug = tecnicaSlugFromNombre(nombre);
+        console.log('[BUILD_PAYLOAD][TECNICA]', { id, nombre, slug, pct });
+
+        if (isTecnicaSlug(slug)) {
+          tecBySlug[slug] = (tecBySlug[slug] || 0) + pct;
+        }
+      }
+
+      const tecArr = (Object.entries(tecBySlug) as [TecnicaSlug, number][])
+        .filter(([, pct]) => pct > 0)
+        .map(([slug, pct]) => ({ tecnica: slug, pct: Number(pct) }));
+
+      if (tecArr.length) payload.tecnicas = tecArr;
+      // === /Técnicas ===
+
+      const mtArr = Object.entries(medTerCant)
+        .filter(([_, c]) => Number(c) > 0)
+        .map(([medio_terrestre_id, cantidad]) => ({ medio_terrestre_id, cantidad: Number(cantidad) }));
+      if (mtArr.length) payload.medios_terrestres = mtArr;
+
+      const maArr = Object.entries(medAerPct)
+        .filter(([_, p]) => Number(p) > 0)
+        .map(([medio_aereo_id, pct]) => ({ medio_aereo_id, pct: Number(pct) }));
+      if (maArr.length) payload.medios_aereos = maArr;
+
+      const macArr = Object.entries(medAcuCant)
+        .filter(([_, c]) => Number(c) > 0)
+        .map(([medio_acuatico_id, cantidad]) => ({ medio_acuatico_id, cantidad: Number(cantidad) }));
+      if (macArr.length) payload.medios_acuaticos = macArr;
+
+      const instArr = Array.from(instSel).map((institucion_uuid) => ({ institucion_uuid }));
+      if (instArr.length) payload.medios_instituciones = instArr;
+
+      const abArr = Object.entries(abastoCant)
+        .filter(([_, c]) => Number(c) > 0)
+        .map(([abasto_id, cantidad]) => ({ abasto_id, cantidad: Number(cantidad) }));
+      if (abArr.length) payload.abastos = abArr;
+
+      if (causaId || (causaOtro && causaOtro.length)) {
+        payload.causa = {
+          ...(causaId ? { causa_id: causaId } : {}),
+          ...(typeof causaOtro === 'string' ? { otro_texto: causaOtro } : {}),
+        };
+      }
+
+      if (
+        typeof tempC === 'number' ||
+        typeof hrPct === 'number' ||
+        typeof vientoVel === 'number' ||
+        typeof vientoDir === 'string'
+      ) {
+        payload.meteo = {
+          ...(typeof tempC === 'number' ? { temp_c: tempC } : {}),
+          ...(typeof hrPct === 'number' ? { hr_pct: hrPct } : {}),
+          ...(typeof vientoVel === 'number' ? { viento_vel: vientoVel } : {}),
+          ...(typeof vientoDir === 'string' ? { viento_dir: vientoDir } : {}),
+        };
+      }
+
+      if (nota && nota.trim().length) payload.nota = nota.trim();
+
+      return payload;
+    } catch (error) {
+      console.error('[buildPayload] Error:', error);
+      throw error;
     }
-
-    if (nota && nota.trim().length) payload.nota = nota.trim();
-
-    return payload;
   }, [
     tipoPrincipalId,
     compArray,
@@ -652,30 +714,36 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
   ]);
 
   const validateBeforeSave = useCallback(() => {
-    const sumTec = sumValues(tecById);
-    if (sumTec > 100.0001) {
-      Alert.alert('Revisa técnicas', `La suma de técnicas es ${sumTec}%. Debe ser ≤ 100%.`);
+    try {
+      const sumTec = sumValues(tecById);
+      if (sumTec > 100.0001) {
+        Alert.alert('Revisa técnicas', `La suma de técnicas es ${sumTec.toFixed(2)}%. Debe ser ≤ 100%.`);
+        return false;
+      }
+      const sumAer = sumValues(medAerPct);
+      if (sumAer > 100.0001) {
+        Alert.alert('Revisa medios aéreos', `La suma de porcentajes aéreos es ${sumAer.toFixed(2)}%. Debe ser ≤ 100%.`);
+        return false;
+      }
+      const sumComp = sumValues(compById);
+      if (sumComp > 100.0001) {
+        Alert.alert('Revisa composición por tipo', `La suma de composición es ${sumComp.toFixed(2)}%. Debe ser ≤ 100%.`);
+        return false;
+      }
+      const sumTopo =
+        (typeof topoPlano === 'number' ? topoPlano : 0) +
+        (typeof topoOndulado === 'number' ? topoOndulado : 0) +
+        (typeof topoQuebrado === 'number' ? topoQuebrado : 0);
+      if (sumTopo > 100.0001) {
+        Alert.alert('Revisa topografía', `La suma de topografía es ${sumTopo.toFixed(2)}%. Debe ser ≤ 100%.`);
+        return false;
+      }
+      return true;
+    } catch (error) {
+      console.error('[validateBeforeSave] Error:', error);
+      Alert.alert('Error de validación', 'Ocurrió un error al validar los datos');
       return false;
     }
-    const sumAer = sumValues(medAerPct);
-    if (sumAer > 100.0001) {
-      Alert.alert('Revisa medios aéreos', `La suma de porcentajes aéreos es ${sumAer}%. Debe ser ≤ 100%.`);
-      return false;
-    }
-    const sumComp = sumValues(compById);
-    if (sumComp > 100.0001) {
-      Alert.alert('Revisa composición por tipo', `La suma de composición es ${sumComp}%. Debe ser ≤ 100%.`);
-      return false;
-    }
-    const sumTopo =
-      (typeof topoPlano === 'number' ? topoPlano : 0) +
-      (typeof topoOndulado === 'number' ? topoOndulado : 0) +
-      (typeof topoQuebrado === 'number' ? topoQuebrado : 0);
-    if (sumTopo > 100.0001) {
-      Alert.alert('Revisa topografía', `La suma de topografía es ${sumTopo}%. Debe ser ≤ 100%.`);
-      return false;
-    }
-    return true;
   }, [tecById, medAerPct, compById, topoPlano, topoOndulado, topoQuebrado]);
 
   const handleSave = useCallback(async () => {
@@ -683,15 +751,25 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
       Alert.alert('No permitido', 'Este cierre está extinguido. Solo un administrador puede modificarlo.');
       return;
     }
+    
+    // 👇 PROTECCIÓN: evitar múltiples guardados simultáneos
+    if (saving) {
+      console.log('[handleSave] Ya hay un guardado en proceso');
+      return;
+    }
+
     try {
       if (!validateBeforeSave()) return;
+      
       setSaving(true);
       const payload = buildPayload();
 
-      // 👇 Log para depurar lo que realmente enviamos
+      console.log('[CIERRE][PATCH] Enviando payload:', JSON.stringify(payload, null, 2));
       console.log('[CIERRE][PATCH] tecnicas ->', payload.tecnicas);
 
       await patchCierreCatalogos(incendioId, payload);
+      
+      Alert.alert('Éxito', 'Cambios guardados correctamente');
       onSaved?.();
     } catch (e: any) {
       console.error('[CIERRE][PATCH][ERROR]', e?.response?.status, e?.response?.data || e);
@@ -700,51 +778,89 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
         e?.response?.data?.message ||
         e?.message ||
         'No se pudo guardar';
-      Alert.alert('Error', String(msg));
+      Alert.alert('Error al guardar', String(msg));
     } finally {
       setSaving(false);
     }
-  }, [buildPayload, incendioId, onSaved, validateBeforeSave, estadoCierre, isAdmin]);
+  }, [buildPayload, incendioId, onSaved, validateBeforeSave, estadoCierre, isAdmin, saving]);
 
-  const handleFinalizar = useCallback(async () => {
-    try {
-      setClosing(true);
-      await finalizarCierre(incendioId);
-      await reload();
-      onSaved?.();
-    } catch (e: any) {
-      const msg =
-        e?.response?.data?.error?.message ||
-        e?.response?.data?.message ||
-        e?.message ||
-        'No se pudo finalizar';
-      Alert.alert('Error', String(msg));
-    } finally {
-      setClosing(false);
-    }
-  }, [incendioId, reload, onSaved]);
+const handleFinalizar = useCallback(async () => {
+  if (closing) {
+    console.log('[handleFinalizar] Ya hay una operación en proceso');
+    return;
+  }
+
+  Alert.alert(
+    'Confirmar finalización',
+    '¿Confirmas que deseas finalizar este incendio?',
+    [
+      {
+        text: 'No',
+        style: 'cancel',
+        onPress: () => console.log('[handleFinalizar] Cancelado por el usuario'),
+      },
+      {
+        text: 'Sí, finalizar',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            setClosing(true);
+            
+            await finalizarCierre(incendioId);
+            await reload();
+            
+            Alert.alert('Éxito', 'Cierre finalizado correctamente');
+            onSaved?.();
+          } catch (e: any) {
+            console.error('[handleFinalizar] Error:', e);
+            const msg =
+              e?.response?.data?.error?.message ||
+              e?.response?.data?.message ||
+              e?.message ||
+              'No se pudo finalizar';
+            Alert.alert('Error al finalizar', String(msg));
+          } finally {
+            setClosing(false);
+          }
+        },
+      },
+    ],
+    { cancelable: true }
+  );
+}, [incendioId, reload, onSaved, closing]);
 
   const handleReabrir = useCallback(async () => {
     if (!isAdmin) {
       Alert.alert('No permitido', 'Solo un administrador puede reabrir un cierre extinguido.');
       return;
     }
+
+    // 👇 PROTECCIÓN: evitar múltiples reaperturas simultáneas
+    if (closing) {
+      console.log('[handleReabrir] Ya hay una operación en proceso');
+      return;
+    }
+
     try {
       setClosing(true);
+      
       await reabrirCierre(incendioId);
       await reload();
+      
+      Alert.alert('Éxito', 'Cierre reabierto correctamente');
       onSaved?.();
     } catch (e: any) {
+      console.error('[handleReabrir] Error:', e);
       const msg =
         e?.response?.data?.error?.message ||
         e?.response?.data?.message ||
         e?.message ||
         'No se pudo reabrir';
-      Alert.alert('Error', String(msg));
+      Alert.alert('Error al reabrir', String(msg));
     } finally {
       setClosing(false);
     }
-  }, [incendioId, reload, onSaved, isAdmin]);
+  }, [incendioId, reload, onSaved, isAdmin, closing]);
 
   const tipoPrincipalNombre = useMemo(
     () => tiposIncendio.find((t) => t.id === tipoPrincipalId)?.nombre || 'Seleccionar…',
@@ -1062,21 +1178,38 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
                 </View>
               </View>
             ))}
-            <View style={[styles.row, { justifyContent: 'flex-start' }]}>
-              <Chip
-                icon="plus"
-                mode="outlined"
-                onPress={() =>
-                  setSv((prev) => [
-                    ...prev,
-                    { ubicacion: 'DENTRO_AP', categoria: 'bosque_natural', area_ha: 0 },
-                  ])
-                }
-                textStyle={styles.txt}
-              >
-                Agregar fila
-              </Chip>
-            </View>
+<View style={[styles.row, { justifyContent: 'flex-start' }]}>
+  <Chip
+    icon="plus"
+    mode="outlined"
+    onPress={() => {
+      Alert.alert(
+        'Agregar superficie',
+        '¿Deseas agregar una nueva fila de superficie por vegetación?',
+        [
+          {
+            text: 'No',
+            style: 'cancel',
+            onPress: () => console.log('[Agregar superficie] Cancelado'),
+          },
+          {
+            text: 'Sí, agregar',
+            onPress: () => {
+              setSv((prev) => [
+                ...prev,
+                { ubicacion: 'DENTRO_AP', categoria: 'bosque_natural', area_ha: 0 },
+              ]);
+            },
+          },
+        ],
+        { cancelable: true }
+      );
+    }}
+    textStyle={styles.txt}
+  >
+    Agregar fila
+  </Chip>
+</View>
 
             <Divider style={styles.sep} />
 
@@ -1255,10 +1388,15 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
 
         {/* Footer */}
         <View style={styles.footer}>
-          <Button onPress={onClose} disabled={saving || closing}>
+          <Button
+            onPress={onClose}
+            disabled={saving || closing}
+            style={{ marginBottom: 60 }}     // ⬅️ agrega esto
+          >
             Cerrar
           </Button>
-          <View style={{ flex: 1 }} />
+
+          <View style={{ flex: 1 }} />  
 
           {showReopenBtn && (
             <Button
@@ -1266,7 +1404,7 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
               onPress={handleReabrir}
               loading={closing && isClosed}
               disabled={saving || closing}
-              style={{ marginRight: 8 }}
+              style={{ marginRight: 8, marginBottom: 60 }}
             >
               Reabrir
             </Button>
@@ -1278,13 +1416,12 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
               onPress={handleSave}
               loading={saving}
               disabled={closing || saving}
-              style={{ marginRight: 8 }}
+              style={{ marginRight: 8, marginBottom: 60 }}
             >
               Guardar
             </Button>
           )}
 
-          {/* Finalizar: ya queda deshabilitado cuando está cerrado */}
           <Button
             mode="contained"
             onPress={handleFinalizar}
@@ -1292,10 +1429,12 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
             disabled={saving || closing || isClosed}
             buttonColor="#2E7D32"
             textColor="#fff"
+            style={{ marginBottom: 60 }}
           >
             Finalizar
           </Button>
         </View>
+
       </View>
 
       {/* Diálogos */}
@@ -1351,7 +1490,7 @@ const styles = StyleSheet.create({
       android: { elevation: 12 },
     }),
   },
-  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 14, paddingBottom: 6 },
+  header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 14, paddingBottom: 6},
   title: { fontSize: 18, fontWeight: 'bold' },
   loader: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
