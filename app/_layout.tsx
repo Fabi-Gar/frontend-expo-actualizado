@@ -1,6 +1,6 @@
 // app/_layout.tsx
 import React, { useEffect } from 'react';
-import { Stack, useRouter, type Href } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { Provider as PaperProvider, MD3LightTheme as DefaultTheme } from 'react-native-paper';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -8,10 +8,11 @@ import { LogBox, Platform } from 'react-native';
 import { NotificationProvider } from '@/components/NotificationContext';
 import GlobalToast from '@/components/GlobalToast';
 import GlobalLoader from '@/components/GlobalLoader';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// --- push notif
-//import * as Notifications from 'expo-notifications';
-//import { registerForPushIfNeeded } from '@/services/register';
+// ✅ Importar el hook de notificaciones
+import { usePushNotifications } from '@/hooks/usePushNotifications';
+import { PushNotificationService } from '@/services/pushNotificationService';
 
 LogBox.ignoreLogs(['useInsertionEffect must not schedule updates']);
 
@@ -24,66 +25,47 @@ const theme = {
   },
 };
 
-/* Mostrar notificación aunque la app esté en foreground (opcional)
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-    // iOS 14+
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});*/
-
 export default function RootLayout() {
-  const router = useRouter();
+  // ✅ Usar el hook de notificaciones
+  const { expoPushToken } = usePushNotifications();
 
-  const userId: string | null = null;
-
-  /* Crear canal Android "default"
+  // ✅ Registrar token cuando esté disponible
   useEffect(() => {
-    if (Platform.OS === 'android') {
-      Notifications.setNotificationChannelAsync('default', {
-        name: 'default',
-        importance: Notifications.AndroidImportance.MAX,
-      }).catch(() => {});
-    }
-  }, []);*/
+    if (!expoPushToken) return;
 
-  /* Navegar cuando el usuario toca una notificación
-  useEffect(() => {
-    const sub = Notifications.addNotificationResponseReceivedListener(
-      (response: Notifications.NotificationResponse) => {
-        const data = (response.notification.request.content.data || {}) as Record<string, any>;
-        const incendioId = data.incendio_id as string | number | undefined;
-        const deeplink = data.deeplink as string | undefined;
+    registerTokenInBackend(expoPushToken);
+  }, [expoPushToken]);
 
-        if (incendioId != null) {
-          // forma type-safe con pathname + params
-          router.push({
-            pathname: '/incendios/detalles',
-            params: { id: String(incendioId) },
-          });
-          return;
-        }
-
-        if (typeof deeplink === 'string') {
-          // si te llega un string arbitrario, castear a Href
-          router.push(deeplink as unknown as Href);
-        }
+  async function registerTokenInBackend(token: string) {
+    try {
+      // Obtener userId del AsyncStorage (ajusta según tu implementación)
+      const userId = await AsyncStorage.getItem('user_id');
+      
+      if (!userId) {
+        console.log('⏭️ Usuario no autenticado, esperando login...');
+        return;
       }
-    );
-    return () => sub.remove();
-  }, [router]);
 
-  // Registrar token con el backend cuando haya userId
-  useEffect(() => {
-    if (!userId) return;
-    registerForPushIfNeeded({ userId }).catch((e: unknown) =>
-      console.warn('registerForPushIfNeeded error', e)
-    );
-  }, [userId]);*/
+      // Obtener preferencias guardadas (si las tienes)
+      const municipiosStr = await AsyncStorage.getItem('municipios_suscritos');
+      const departamentosStr = await AsyncStorage.getItem('departamentos_suscritos');
+      
+      const municipios = municipiosStr ? JSON.parse(municipiosStr) : [];
+      const departamentos = departamentosStr ? JSON.parse(departamentosStr) : [];
+
+      // Registrar en el backend
+      await PushNotificationService.registerToken(
+        userId,
+        token,
+        municipios,
+        departamentos
+      );
+
+      console.log('✅ Token registrado exitosamente en backend');
+    } catch (error) {
+      console.error('❌ Error registrando token:', error);
+    }
+  }
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>

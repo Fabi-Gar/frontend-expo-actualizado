@@ -6,6 +6,8 @@ import * as Yup from 'yup';
 import { router } from 'expo-router';
 import { login } from '../services/auth';
 import { saveToken, saveUser } from '../session';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { PushNotificationService } from '../services/pushNotificationService';
 
 const LoginSchema = Yup.object().shape({
   email: Yup.string().email('Correo inválido').required('Requerido'),
@@ -29,6 +31,25 @@ export default function Login() {
 
       await saveToken(token);
       await saveUser(user);
+
+      // ✅ Registrar token de push si existe
+      try {
+        const expoPushToken = await AsyncStorage.getItem('expo_push_token');
+        
+        if (expoPushToken && user.usuario_uuid) {
+          await PushNotificationService.registerToken(
+            user.usuario_uuid,
+            expoPushToken,
+            [], // TODO: cargar municipios preferidos
+            []  // TODO: cargar departamentos preferidos
+          );
+          console.log('✅ Token push registrado al hacer login');
+        }
+      } catch (pushError) {
+        console.error('Error registrando push token:', pushError);
+        // No bloquear login si falla el registro de push
+      }
+
       router.replace('/mapa');
     } catch (e: any) {
       // 🔎 Captura segura de error de red o backend
