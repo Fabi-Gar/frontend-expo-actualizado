@@ -9,7 +9,7 @@ import { NotificationProvider } from '@/components/NotificationContext';
 import GlobalToast from '@/components/GlobalToast';
 import GlobalLoader from '@/components/GlobalLoader';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { PushNotificationService } from '@/services/pushNotificationService';
+import { PushNotificationService} from '@/services/pushNotificationService';
 
 LogBox.ignoreLogs(['useInsertionEffect must not schedule updates']);
 
@@ -51,6 +51,9 @@ export default function RootLayout() {
       if (token) {
         console.log('✅ FCM Token obtenido:', token.substring(0, 30) + '...');
         setFcmToken(token);
+        
+        // ✅ Configurar listener para refrescar token
+        PushNotificationService.setupTokenRefreshListener();
       } else {
         console.log('⚠️ No se pudo obtener FCM token');
       }
