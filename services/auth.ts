@@ -1,12 +1,23 @@
 import { api } from '../client'
 import { saveToken, saveUser } from '../session'
 
-export async function login(payload: { email: string; password: string }) {
-  const { data } = await api.post('/auth/login', { email: payload.email, password: payload.password })
+export async function login(payload: { 
+  email: string; 
+  password: string;
+  expoPushToken?: string; // ← Agregar parámetro opcional
+}) {
+  const { data } = await api.post('/auth/login', { 
+    email: payload.email, 
+    password: payload.password,
+    expoPushToken: payload.expoPushToken, // ← Enviar al backend
+  })
+  
   const { token, user } = data || {}
   if (!token) throw new Error('Respuesta inválida del servidor')
+  
   await saveToken(token)
   await saveUser(user)
+  
   return { token, user }
 }
 

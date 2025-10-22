@@ -1,7 +1,7 @@
 // app/incendios/detalles.tsx
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { View, StyleSheet, ScrollView, TouchableOpacity, Alert, Image } from 'react-native';
-import { Text, Button, Divider } from 'react-native-paper';
+import { Text, Button, Divider, IconButton } from 'react-native-paper';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -44,6 +44,9 @@ export default function DetalleIncendio() {
 
   const [editorVisible, setEditorVisible] = useState(false);
 
+  const [siguiendo, setSiguiendo] = useState(false);
+const [loadingSeguir, setLoadingSeguir] = useState(false);
+
   // Gateo de UI: no mostrar hasta que datos + imagen estén listos (o timeout)
   const [dataReady, setDataReady] = useState(false);
   const [imageReady, setImageReady] = useState(false);
@@ -53,6 +56,21 @@ export default function DetalleIncendio() {
   const [resolvedCover, setResolvedCover] = useState<string | null>(null);
 
   useEffect(() => { (async () => { try { setUser(await getUser()); } catch {} })(); }, []);
+
+
+  useEffect(() => {
+  const checkSiguiendo = async () => {
+    try {
+      const res = await api.get(`/incendios/${id}/siguiendo`);
+      setSiguiendo(res.data.siguiendo);
+    } catch (error) {
+      console.error('Error verificando seguimiento:', error);
+    }
+  };
+  if (id) {
+    checkSiguiendo();
+  }
+}, [id]);
 
   const isAdmin: boolean = user?.is_admin === true;
 
@@ -273,6 +291,61 @@ export default function DetalleIncendio() {
       return false;
     }
   }, []);
+
+  const toggleSeguir = () => {
+  if (siguiendo) {
+    // Si ya sigue, confirmar si quiere dejar de seguir
+    Alert.alert(
+      'Dejar de seguir',
+      '¿Dejar de recibir notificaciones de este incendio?',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Sí, dejar de seguir',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setLoadingSeguir(true);
+              await api.delete(`/incendios/${id}/seguir`);
+              setSiguiendo(false);
+              Alert.alert('Dejaste de seguir este incendio');
+            } catch (error) {
+              console.error('Error:', error);
+              Alert.alert('Error', 'No se pudo realizar la acción');
+            } finally {
+              setLoadingSeguir(false);
+            }
+          },
+        },
+      ]
+    );
+  } else {
+    // Si no sigue, confirmar si quiere seguir
+    Alert.alert(
+      'Seguir incendio',
+      '¿Recibir notificaciones cuando haya actualizaciones?',
+      [
+        { text: 'No', style: 'cancel' },
+        {
+          text: 'Sí, seguir',
+          onPress: async () => {
+            try {
+              setLoadingSeguir(true);
+              await api.post(`/incendios/${id}/seguir`);
+              setSiguiendo(true);
+              Alert.alert('Ahora sigues este incendio. Recibirás notificaciones de actualizaciones.');
+            } catch (error) {
+              console.error('Error:', error);
+              Alert.alert('Error', 'No se pudo realizar la acción');
+            } finally {
+              setLoadingSeguir(false);
+            }
+          },
+        },
+      ]
+    );
+  }
+};
 
   // Gateo de imagen: esperamos a que haya resolvedCover (o no haya) + prefetch/timeout
   useEffect(() => {
@@ -583,12 +656,14 @@ export default function DetalleIncendio() {
             <Text style={styles.sub}>{estadoCierre}</Text>
           </View>
 
-          {/* Editar incendio: solo admin o creador */}
-          {puedeModerarse && (
-            <TouchableOpacity onPress={() => router.push({ pathname: '/incendios/crear', params: { id: String(id) } })}>
-              <Text style={styles.link}>Editar</Text>
-            </TouchableOpacity>
-          )}
+          <IconButton
+            icon={siguiendo ? 'bell' : 'bell-outline'}
+            size={24}
+            iconColor={siguiendo ? '#2196F3' : '#666'}
+            onPress={toggleSeguir}
+            disabled={loadingSeguir}
+            style={{ margin: 0 }}
+          />
         </View>
 
         {/* Portada/compartible */}

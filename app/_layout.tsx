@@ -1,17 +1,14 @@
 // app/_layout.tsx
-import React, { useEffect } from 'react';
-import { Stack, useRouter } from 'expo-router';
+import React, { useEffect, useState } from 'react';
+import { Stack } from 'expo-router';
 import { Provider as PaperProvider, MD3LightTheme as DefaultTheme } from 'react-native-paper';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { LogBox, Platform } from 'react-native';
+import { LogBox } from 'react-native';
 import { NotificationProvider } from '@/components/NotificationContext';
 import GlobalToast from '@/components/GlobalToast';
 import GlobalLoader from '@/components/GlobalLoader';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-
-// ✅ Importar el hook de notificaciones
-import { usePushNotifications } from '@/hooks/usePushNotifications';
 import { PushNotificationService } from '@/services/pushNotificationService';
 
 LogBox.ignoreLogs(['useInsertionEffect must not schedule updates']);
@@ -26,23 +23,57 @@ const theme = {
 };
 
 export default function RootLayout() {
-  // ✅ Usar el hook de notificaciones
-  const { expoPushToken } = usePushNotifications();
+  const [fcmToken, setFcmToken] = useState<string | null>(null);
 
-  // ✅ Registrar token cuando esté disponible
+  // ✅ Inicializar Firebase y obtener FCM token
   useEffect(() => {
-    if (!expoPushToken) return;
+    initializeNotifications();
+  }, []);
 
-    registerTokenInBackend(expoPushToken);
-  }, [expoPushToken]);
+  // ✅ Registrar token cuando esté disponible y el usuario autenticado
+  useEffect(() => {
+    if (!fcmToken) return;
+    
+    // Guardar en AsyncStorage para usarlo en el login
+    AsyncStorage.setItem('fcm_token', fcmToken);
+    
+    // Intentar registrar si ya hay usuario
+    registerTokenInBackend(fcmToken);
+  }, [fcmToken]);
+
+  async function initializeNotifications() {
+    try {
+      console.log('🚀 Inicializando notificaciones Firebase...');
+      
+      // Inicializar servicio de notificaciones (incluye FCM)
+      const token = await PushNotificationService.initialize();
+      
+      if (token) {
+        console.log('✅ FCM Token obtenido:', token.substring(0, 30) + '...');
+        setFcmToken(token);
+      } else {
+        console.log('⚠️ No se pudo obtener FCM token');
+      }
+    } catch (error) {
+      console.error('❌ Error inicializando notificaciones:', error);
+    }
+  }
 
   async function registerTokenInBackend(token: string) {
     try {
-      // Obtener userId del AsyncStorage (ajusta según tu implementación)
-      const userId = await AsyncStorage.getItem('user_id');
+      // Obtener el usuario del AsyncStorage
+      const userStr = await AsyncStorage.getItem('user');
       
-      if (!userId) {
+      if (!userStr) {
         console.log('⏭️ Usuario no autenticado, esperando login...');
+        return;
+      }
+
+      const user = JSON.parse(userStr);
+      const userId = user.usuario_uuid;
+
+      if (!userId) {
+        console.log('⚠️ No se encontró usuario_uuid');
         return;
       }
 
@@ -53,6 +84,8 @@ export default function RootLayout() {
       const municipios = municipiosStr ? JSON.parse(municipiosStr) : [];
       const departamentos = departamentosStr ? JSON.parse(departamentosStr) : [];
 
+      console.log('📤 Registrando token en backend para usuario:', userId);
+
       // Registrar en el backend
       await PushNotificationService.registerToken(
         userId,
@@ -61,7 +94,7 @@ export default function RootLayout() {
         departamentos
       );
 
-      console.log('✅ Token registrado exitosamente en backend');
+      console.log('✅ Token FCM registrado exitosamente en backend');
     } catch (error) {
       console.error('❌ Error registrando token:', error);
     }

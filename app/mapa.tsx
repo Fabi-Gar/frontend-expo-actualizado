@@ -569,6 +569,12 @@ export default function Mapa() {
     if (route === 'Logout') { closeMenu(); return; }
     if (route === 'Mi Usuario') { closeMenu(); router.push('/mi-usuario'); return; }
     if (route === 'notificaciones') { closeMenu(); router.push('/notificaciones'); return; }
+
+     if (route === 'preferencias') {
+    router.push('/preferencias'); 
+    return;
+  }
+
     if (route === 'Reportes') { closeMenu(); router.push('/incendios/reportes'); return; }
     if (route === 'listaIncendios') { closeMenu(); router.push('/incendios/listaIncendios'); return; }
     if (route === 'Catalogo Incendio') { closeMenu(); router.push('/admin/catalogos'); return; }

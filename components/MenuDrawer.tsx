@@ -47,18 +47,23 @@ export const MenuDrawer = ({ animation, onClose, onNavigate, isAdmin = false }: 
       <Text style={styles.title}>App incendios</Text>
 
       <TouchableOpacity style={styles.option} onPress={() => onNavigate('Mi Usuario')}>
-        <Ionicons name="map" size={20} color="#37474F" style={styles.icon} />
+        <Ionicons name="person-circle" size={20} color="#37474F" style={styles.icon} />
         <Text style={styles.optionText}>Mi perfil</Text>
       </TouchableOpacity>
 
       <TouchableOpacity style={styles.option} onPress={() => onNavigate('Reportes')}>
-        <Ionicons name="information-circle" size={20} color="#37474F" style={styles.icon} />
+        <Ionicons name="document-text" size={20} color="#37474F" style={styles.icon} />
         <Text style={styles.optionText}>Mis reportes</Text>
       </TouchableOpacity>
 
-            <TouchableOpacity style={styles.option} onPress={() => onNavigate('notificaciones')}>
-        <Ionicons name="information-circle" size={20} color="#37474F" style={styles.icon} />
+      <TouchableOpacity style={styles.option} onPress={() => onNavigate('notificaciones')}>
+        <Ionicons name="notifications" size={20} color="#37474F" style={styles.icon} />
         <Text style={styles.optionText}>Notificaciones</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity style={styles.option} onPress={() => onNavigate('preferencias')}>
+        <Ionicons name="settings" size={20} color="#37474F" style={styles.icon} />
+        <Text style={styles.optionText}>Preferencias</Text>
       </TouchableOpacity>
 
       <Text style={styles.section}>Otras opciones</Text>

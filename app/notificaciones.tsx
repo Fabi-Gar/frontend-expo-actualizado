@@ -1,181 +1,208 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { ScrollView, View, Alert } from 'react-native';
-import { Text, Switch, Button, Divider, Chip, ActivityIndicator } from 'react-native-paper';
-import { useRouter } from 'expo-router';
-
+// app/notificaciones.tsx
+import React, { useEffect, useState } from 'react';
+import { ScrollView, View, StyleSheet, RefreshControl } from 'react-native';
+import { Text, Card, ActivityIndicator, Button, Chip } from 'react-native-paper';
+import { Stack } from 'expo-router';
 import { api } from '@/client';
-import { getUser } from '@/session';
-import { listDepartamentos, Departamento } from '@/services/catalogos';
-import { registerForPushIfNeeded } from '@/services/register';
 
-export default function PrefsScreen() {
-  const router = useRouter();
+interface Notificacion {
+  notificacion_uuid: string;
+  titulo: string;
+  mensaje: string;
+  tipo?: string;
+  leida_en: string | null;
+  creado_en: string;
+}
 
-  const [user, setUser] = useState<any>(null);
-  const [loadingUser, setLoadingUser] = useState(true);
+export default function NotificacionesScreen() {
+  const [notificaciones, setNotificaciones] = useState<Notificacion[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const [departamentos, setDepartamentos] = useState<Departamento[]>([]);
-  const [loadingDeps, setLoadingDeps] = useState(true);
-
-  const [regiones, setRegiones] = useState<string[]>([]);
-  const [avisarmeAprobado, setAvisarmeAprobado] = useState<boolean>(true);
-  const [saving, setSaving] = useState(false);
-  const [registering, setRegistering] = useState(false);
-
-  // Cargar usuario
   useEffect(() => {
-    (async () => {
-      try {
-        const u = await getUser();
-        setUser(u || null);
-      } finally {
-        setLoadingUser(false);
-      }
-    })();
+    loadNotificaciones();
   }, []);
 
-  // Cargar departamentos
-  useEffect(() => {
-    (async () => {
-      try {
-        const deps = await listDepartamentos();
-        setDepartamentos(deps);
-      } catch (e: any) {
-        Alert.alert('Error', e?.message || 'No se pudieron cargar departamentos');
-      } finally {
-        setLoadingDeps(false);
-      }
-    })();
-  }, []);
-
-  // (Opcional) Si tuvieras un endpoint GET para traer prefs existentes,
-  // podrías cargarlas aquí y hacer setRegiones([...]) y setAvisarmeAprobado(true/false).
-
-  const toggleRegion = (code: string) => {
-    setRegiones(prev =>
-      prev.includes(code) ? prev.filter(r => r !== code) : [...prev, code]
-    );
-  };
-
-  const onGuardar = async () => {
-    if (!user?.usuario_uuid) {
-      Alert.alert('Error', 'Usuario no autenticado.');
-      return;
-    }
+  const loadNotificaciones = async (showLoader = true) => {
     try {
-      setSaving(true);
-      await api.post('/push/prefs', {
-        userId: user.usuario_uuid,
-        regionesSuscritas: regiones,
-        avisarmeAprobado,
-      });
-      Alert.alert('Listo', 'Preferencias guardadas.');
-      // router.back(); // si quieres volver
-    } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo guardar');
+      if (showLoader) setLoading(true);
+      const response = await api.get('/notificaciones');
+      setNotificaciones(response.data.data || []);
+    } catch (error) {
+      console.error('Error cargando notificaciones:', error);
     } finally {
-      setSaving(false);
+      setLoading(false);
+      setRefreshing(false);
     }
   };
 
-  const onRegistrarToken = async () => {
-    if (!user?.usuario_uuid) {
-      Alert.alert('Error', 'Usuario no autenticado.');
-      return;
-    }
+  const onRefresh = () => {
+    setRefreshing(true);
+    loadNotificaciones(false);
+  };
+
+  const marcarComoLeida = async (id: string) => {
     try {
-      setRegistering(true);
-      await registerForPushIfNeeded({ userId: user.usuario_uuid });
-      Alert.alert('Listo', 'Token registrado con el servidor.');
-    } catch (e: any) {
-      Alert.alert('Error', e?.message || 'No se pudo registrar el token.');
-    } finally {
-      setRegistering(false);
+      await api.post(`/notificaciones/${id}/leer`);
+      setNotificaciones(prev =>
+        prev.map(n =>
+          n.notificacion_uuid === id ? { ...n, leida_en: new Date().toISOString() } : n
+        )
+      );
+    } catch (error) {
+      console.error('Error marcando notificación:', error);
     }
   };
 
-  const isReady = useMemo(() => !loadingUser && !loadingDeps, [loadingUser, loadingDeps]);
+  const marcarTodasComoLeidas = async () => {
+    try {
+      await api.post('/notificaciones/leer-todas');
+      loadNotificaciones(false);
+    } catch (error) {
+      console.error('Error:', error);
+    }
+  };
+
+  const getIconoTipo = (tipo?: string) => {
+    switch (tipo) {
+      case 'incendio_aprobado': return '✅';
+      case 'incendio_actualizado': return '📢';
+      case 'incendio_cerrado': return '🏁';
+      case 'incendio_nuevo_municipio': return '🔥';
+      default: return '🔔';
+    }
+  };
+
+  const noLeidas = notificaciones.filter(n => !n.leida_en).length;
 
   return (
-    <ScrollView contentContainerStyle={{ padding: 16 }}>
-      <Text variant="titleLarge" style={{ marginBottom: 12 }}>
-        Preferencias de notificaciones
-      </Text>
-
-      {!isReady ? (
-        <View style={{ paddingVertical: 24 }}>
-          <ActivityIndicator />
-        </View>
-      ) : (
-        <>
-          <Divider />
-
-          {/* Regiones (Departamentos) */}
-          <View style={{ marginVertical: 16 }}>
-            <Text variant="titleMedium" style={{ marginBottom: 8 }}>
-              Regiones suscritas (por Departamento)
+    <>
+      <Stack.Screen 
+        options={{ 
+          title: '🔔 Notificaciones',
+          headerShown: true,
+        }} 
+      />
+      
+      <ScrollView 
+        style={styles.container}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+      >
+        {loading ? (
+          <View style={styles.centered}>
+            <ActivityIndicator size="large" />
+          </View>
+        ) : notificaciones.length === 0 ? (
+          <View style={styles.centered}>
+            <Text variant="headlineSmall" style={{ marginBottom: 8 }}>
+              📭
             </Text>
-
-            {departamentos.length === 0 ? (
-              <Text>No hay departamentos disponibles.</Text>
-            ) : (
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
-                {departamentos.map((d) => {
-                  // Usamos el UUID del departamento como regionCode
-                  const regionCode = d.id;
-                  const selected = regiones.includes(regionCode);
-                  return (
-                    <Chip
-                      key={regionCode}
-                      selected={selected}
-                      onPress={() => toggleRegion(regionCode)}
-                      style={{ marginRight: 6, marginBottom: 6 }}
-                    >
-                      {d.nombre}
-                    </Chip>
-                  );
-                })}
-              </View>
-            )}
+            <Text>No tienes notificaciones</Text>
           </View>
+        ) : (
+          <>
+            <View style={styles.header}>
+              {noLeidas > 0 && (
+                <Chip icon="bell" style={{ marginRight: 8 }}>
+                  {noLeidas} sin leer
+                </Chip>
+              )}
+              {notificaciones.length > 0 && (
+                <Button 
+                  mode="outlined" 
+                  onPress={marcarTodasComoLeidas}
+                  compact
+                >
+                  Marcar todas leídas
+                </Button>
+              )}
+            </View>
 
-          <Divider />
-
-          {/* Aprobación propia */}
-          <View
-            style={{
-              flexDirection: 'row',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginVertical: 16,
-            }}
-          >
-            <Text>Recibir aviso cuando aprueben mis incendios</Text>
-            <Switch value={avisarmeAprobado} onValueChange={setAvisarmeAprobado} />
-          </View>
-
-          <Divider />
-
-          {/* Acciones */}
-          <Button
-            mode="contained"
-            onPress={onGuardar}
-            loading={saving}
-            style={{ marginTop: 16 }}
-          >
-            Guardar preferencias
-          </Button>
-
-          <Button
-            mode="outlined"
-            onPress={onRegistrarToken}
-            loading={registering}
-            style={{ marginTop: 12 }}
-          >
-            Registrar token de notificaciones
-          </Button>
-        </>
-      )}
-    </ScrollView>
+            {notificaciones.map((notif) => (
+              <Card
+                key={notif.notificacion_uuid}
+                style={[
+                  styles.card,
+                  notif.leida_en ? styles.cardLeida : styles.cardNoLeida,
+                ]}
+                onPress={() => !notif.leida_en && marcarComoLeida(notif.notificacion_uuid)}
+              >
+                <Card.Content>
+                  <View style={styles.cardHeader}>
+                    <Text style={styles.icono}>
+                      {getIconoTipo(notif.tipo)}
+                    </Text>
+                    <Text variant="titleMedium" style={styles.titulo}>
+                      {notif.titulo}
+                    </Text>
+                  </View>
+                  <Text variant="bodyMedium" style={styles.mensaje}>
+                    {notif.mensaje}
+                  </Text>
+                  <Text variant="bodySmall" style={styles.fecha}>
+                    {new Date(notif.creado_en).toLocaleString('es-GT')}
+                  </Text>
+                </Card.Content>
+              </Card>
+            ))}
+          </>
+        )}
+      </ScrollView>
+    </>
   );
 }
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#f5f5f5',
+  },
+  centered: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 48,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 16,
+    paddingBottom: 8,
+  },
+  card: {
+    marginHorizontal: 16,
+    marginBottom: 12,
+    elevation: 2,
+  },
+  cardNoLeida: {
+    backgroundColor: '#E3F2FD',
+    borderLeftWidth: 4,
+    borderLeftColor: '#2196F3',
+  },
+  cardLeida: {
+    backgroundColor: '#fff',
+    opacity: 0.8,
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  icono: {
+    fontSize: 24,
+    marginRight: 8,
+  },
+  titulo: {
+    fontWeight: 'bold',
+    flex: 1,
+  },
+  mensaje: {
+    marginBottom: 8,
+  },
+  fecha: {
+    color: '#666',
+  },
+});

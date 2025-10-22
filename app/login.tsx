@@ -18,10 +18,23 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [secure, setSecure] = useState(true);
 
-  const onSubmitLogin = async (values: { email: string; password: string }) => {
-    try {
-      setLoading(true);
-      const { token, user } = await login(values);
+    // En tu componente de Login
+    const onSubmitLogin = async (values: { email: string; password: string }) => {
+      try {
+        setLoading(true);
+        
+        // ✅ Obtener el token FCM (ya no Expo Push Token)
+        const fcmToken = await AsyncStorage.getItem('fcm_token');
+        
+        console.log('🔍 DEBUG Login:', {
+          email: values.email,
+          hasFCMToken: !!fcmToken,
+        });
+        
+        const { token, user } = await login({
+          ...values,
+          expoPushToken: fcmToken || undefined, // Enviar FCM token
+        });
 
       // ✅ Validación de token JWT
       if (!token || typeof token !== 'string' || token.split('.').length !== 3) {
@@ -32,23 +45,7 @@ export default function Login() {
       await saveToken(token);
       await saveUser(user);
 
-      // ✅ Registrar token de push si existe
-      try {
-        const expoPushToken = await AsyncStorage.getItem('expo_push_token');
-        
-        if (expoPushToken && user.usuario_uuid) {
-          await PushNotificationService.registerToken(
-            user.usuario_uuid,
-            expoPushToken,
-            [], // TODO: cargar municipios preferidos
-            []  // TODO: cargar departamentos preferidos
-          );
-          console.log('✅ Token push registrado al hacer login');
-        }
-      } catch (pushError) {
-        console.error('Error registrando push token:', pushError);
-        // No bloquear login si falla el registro de push
-      }
+      console.log('✅ Login exitoso y token push enviado al backend');
 
       router.replace('/mapa');
     } catch (e: any) {
