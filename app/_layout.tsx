@@ -73,8 +73,7 @@ export default function RootLayout() {
       }
 
       const user = JSON.parse(userStr);
-      const userId = user.usuario_uuid;
-
+      const userId = user.id || user._id || user.usuario_uuid;
       if (!userId) {
         console.log('⚠️ No se encontró usuario_uuid');
         return;
