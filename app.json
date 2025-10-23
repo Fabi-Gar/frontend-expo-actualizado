@@ -9,16 +9,6 @@
     "newArchEnabled": true,
     "plugins": [
       "expo-router",
-      [
-        "expo-splash-screen",
-        {
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 200,
-          "resizeMode": "contain",
-          "backgroundColor": "#ffffff",
-          "dark": { "backgroundColor": "#000000" }
-        }
-      ],
       "@react-native-firebase/app",
       "expo-notifications",
       "expo-web-browser"

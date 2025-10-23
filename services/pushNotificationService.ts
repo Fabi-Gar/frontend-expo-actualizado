@@ -84,9 +84,8 @@ export class PushNotificationService {
   static configureForegroundListener() {
     Notifications.setNotificationHandler({
       handleNotification: async () => ({
-        shouldShowAlert: true,
-        shouldShowBanner: true,
-        shouldShowList: true,
+        shouldShowBanner: true,    // Para mostrar banner/alert
+        shouldShowList: true,      // Para mostrar en centro de notificaciones
         shouldPlaySound: true,
         shouldSetBadge: true,
       }),
