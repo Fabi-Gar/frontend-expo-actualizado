@@ -393,7 +393,6 @@ const [loadingSeguir, setLoadingSeguir] = useState(false);
   const repNombre = [repUsuario?.nombre, repUsuario?.apellido].filter(Boolean).join(' ') || ultimoReporte?.reportado_por_nombre || '—';
   const repInstit = ultimoReporte?.institucion?.nombre || (repUsuario?.institucion?.nombre ?? '—');
   const repIsAdmin = (repUsuario?.is_admin === true) ? 'Sí' : 'No';
-  const repRol = repUsuario?.rol?.nombre || '—';
   const repTel = repUsuario?.telefono ?? ultimoReporte?.telefono ?? '—';
 
   const Row = ({ label, value }: { label: string; value?: string | null }) => (
@@ -740,7 +739,6 @@ const [loadingSeguir, setLoadingSeguir] = useState(false);
                 <Row label="Nombre" value={repNombre} />
                 <Row label="Institución" value={repInstit} />
                 <Row label="Admin" value={repIsAdmin} />
-                <Row label="Rol" value={repRol} />
                 <Row label="Teléfono" value={repTel} />
               </View>
             </View>

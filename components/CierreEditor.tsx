@@ -54,7 +54,6 @@ const tecnicaSlugFromNombre = (nombre?: string) => {
   return undefined;
 };
 
-
 type TecnicaSlug = 'directo' | 'indirecto' | 'control_natural';
 const isTecnicaSlug = (s: any): s is TecnicaSlug =>
   s === 'directo' || s === 'indirecto' || s === 'control_natural';
@@ -66,6 +65,32 @@ const tecnicaIdFromSlug = (
   const item = tecnicasCat.find((t) => tecnicaSlugFromNombre(t.nombre) === slug);
   return item?.id;
 };
+
+/* =======================
+ * Catálogo local: dirección del viento
+ * ======================= */
+const CARDINALES: { id: string; nombre: string }[] = [
+  { id: 'N',   nombre: 'N (Norte)' },
+  { id: 'NNE', nombre: 'NNE' },
+  { id: 'NE',  nombre: 'NE (Noreste)' },
+  { id: 'ENE', nombre: 'ENE' },
+  { id: 'E',   nombre: 'E (Este)' },
+  { id: 'ESE', nombre: 'ESE' },
+  { id: 'SE',  nombre: 'SE (Sureste)' },
+  { id: 'SSE', nombre: 'SSE' },
+  { id: 'S',   nombre: 'S (Sur)' },
+  { id: 'SSW', nombre: 'SSO/SSW' },
+  { id: 'SW',  nombre: 'SO/SW (Suroeste)' },
+  { id: 'WSW', nombre: 'OSO/WSW' },
+  { id: 'W',   nombre: 'O/W (Oeste)' },
+  { id: 'WNW', nombre: 'ONO/WNW' },
+  { id: 'NW',  nombre: 'NO/NW (Noroeste)' },
+  { id: 'NNW', nombre: 'NNO/NNW' },
+  { id: 'Variable', nombre: 'Variable' },
+  { id: 'Calma',    nombre: 'Calma' },
+];
+const nombreCardinal = (id?: string) =>
+  CARDINALES.find(c => c.id === id)?.nombre ?? 'Seleccionar…';
 
 /* =======================
  * Diálogo de selección
@@ -80,7 +105,7 @@ function SelectDialog({
 }: {
   visible: boolean;
   title: string;
-  options: CatalogoItem[];
+  options: CatalogoItem[] | { id: string; nombre: string }[];
   selectedId?: string;
   onSelect: (id: string) => void;
   onClose: () => void;
@@ -93,7 +118,7 @@ function SelectDialog({
           <Divider />
           <ScrollView style={{ maxHeight: 360, marginTop: 6 }}>
             <RadioButton.Group onValueChange={(v) => onSelect(v)} value={selectedId ?? ''}>
-              {options.map((opt) => (
+              {options.map((opt: any) => (
                 <Pressable
                   key={opt.id}
                   onPress={() => onSelect(opt.id)}
@@ -280,10 +305,8 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
   const [closing, setClosing] = useState(false);
   const [estadoCierre, setEstadoCierre] = useState<EstadoCierre>('Pendiente');
 
-  // 👇 estado admin
   const [isAdmin, setIsAdmin] = useState(false);
   
-  // 👇 PROTECCIÓN: solo carga una vez al montar
   useEffect(() => {
     let mounted = true;
     
@@ -304,7 +327,7 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
     return () => {
       mounted = false;
     };
-  }, []); // ⚠️ Sin dependencias - solo se ejecuta al montar
+  }, []);
 
   // Catálogos
   const [tiposIncendio, setTiposIncendio] = useState<CatalogoItem[]>([]);
@@ -318,7 +341,6 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
   const [instituciones, setInstituciones] = useState<CatalogoItem[]>([]);
   const [tecnicasCat, setTecnicasCat] = useState<CatalogoItem[]>([]);
 
-  // 👇 PROTECCIÓN: useCallback sin dependencias innecesarias
   const fetchAllCatalogs = useCallback(async () => {
     try {
       const [
@@ -375,7 +397,7 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
       Alert.alert('Error', 'No se pudieron cargar los catálogos');
       throw error;
     }
-  }, []); // ⚠️ Sin dependencias - la función es estable
+  }, []);
 
   // Form
   const [tipoPrincipalId, setTipoPrincipalId] = useState<string | undefined>(undefined);
@@ -408,7 +430,6 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
   const [supFuera, setSupFuera] = useState<number | undefined>(undefined);
   const [supNombreAP, setSupNombreAP] = useState<string | undefined>(undefined);
 
-  // 👇 PROTECCIÓN: cálculo automático con effect
   useEffect(() => {
     const total =
       (typeof supDentro === 'number' ? supDentro : 0) +
@@ -450,11 +471,11 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
   const [dlgTipoOpen, setDlgTipoOpen] = useState(false);
   const [dlgIniciadoOpen, setDlgIniciadoOpen] = useState(false);
   const [dlgCausaOpen, setDlgCausaOpen] = useState(false);
+  const [dlgVientoOpen, setDlgVientoOpen] = useState(false);
 
   const sumValues = (obj: Record<string, number>) =>
     Object.values(obj).reduce((acc, n) => acc + (Number.isFinite(n) ? Number(n) : 0), 0);
 
-  // 👇 PROTECCIÓN: reload con flag de montaje
   const reload = useCallback(async () => {
     let mounted = true;
     
@@ -462,11 +483,11 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
     try {
       const cats = await fetchAllCatalogs();
       
-      if (!mounted) return; // Salir si el componente se desmontó
+      if (!mounted) return;
       
       const c = await getCierre(incendioId);
 
-      if (!mounted) return; // Verificar de nuevo después de la llamada async
+      if (!mounted) return;
 
       setEstadoCierre(c.estado_cierre);
       setTipoPrincipalId(c?.tipo_incendio_principal?.id ?? undefined);
@@ -550,7 +571,6 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
     };
   }, [incendioId, fetchAllCatalogs]);
 
-  // 👇 PROTECCIÓN: solo recargar cuando el modal se abre
   useEffect(() => {
     if (visible) {
       reload();
@@ -602,7 +622,6 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
 
       if (sv.length) payload.superficie_vegetacion = sv;
 
-      // === Técnicas: mapeo robusto y suma por slug ===
       const tecBySlug: Record<TecnicaSlug, number> = {
         directo: 0,
         indirecto: 0,
@@ -614,7 +633,6 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
         if (!Number.isFinite(pct) || pct <= 0) continue;
         const nombre = tecnicasCat.find((t) => t.id === id)?.nombre;
         const slug = tecnicaSlugFromNombre(nombre);
-        console.log('[BUILD_PAYLOAD][TECNICA]', { id, nombre, slug, pct });
 
         if (isTecnicaSlug(slug)) {
           tecBySlug[slug] = (tecBySlug[slug] || 0) + pct;
@@ -626,7 +644,6 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
         .map(([slug, pct]) => ({ tecnica: slug, pct: Number(pct) }));
 
       if (tecArr.length) payload.tecnicas = tecArr;
-      // === /Técnicas ===
 
       const mtArr = Object.entries(medTerCant)
         .filter(([_, c]) => Number(c) > 0)
@@ -751,8 +768,6 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
       Alert.alert('No permitido', 'Este cierre está extinguido. Solo un administrador puede modificarlo.');
       return;
     }
-    
-    // 👇 PROTECCIÓN: evitar múltiples guardados simultáneos
     if (saving) {
       console.log('[handleSave] Ya hay un guardado en proceso');
       return;
@@ -784,58 +799,56 @@ export default function CierreEditor({ incendioId, visible, onClose, onSaved }: 
     }
   }, [buildPayload, incendioId, onSaved, validateBeforeSave, estadoCierre, isAdmin, saving]);
 
-const handleFinalizar = useCallback(async () => {
-  if (closing) {
-    console.log('[handleFinalizar] Ya hay una operación en proceso');
-    return;
-  }
+  const handleFinalizar = useCallback(async () => {
+    if (closing) {
+      console.log('[handleFinalizar] Ya hay una operación en proceso');
+      return;
+    }
 
-  Alert.alert(
-    'Confirmar finalización',
-    '¿Confirmas que deseas finalizar este incendio?',
-    [
-      {
-        text: 'No',
-        style: 'cancel',
-        onPress: () => console.log('[handleFinalizar] Cancelado por el usuario'),
-      },
-      {
-        text: 'Sí, finalizar',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            setClosing(true);
-            
-            await finalizarCierre(incendioId);
-            await reload();
-            
-            Alert.alert('Éxito', 'Cierre finalizado correctamente');
-            onSaved?.();
-          } catch (e: any) {
-            console.error('[handleFinalizar] Error:', e);
-            const msg =
-              e?.response?.data?.error?.message ||
-              e?.response?.data?.message ||
-              e?.message ||
-              'No se pudo finalizar';
-            Alert.alert('Error al finalizar', String(msg));
-          } finally {
-            setClosing(false);
-          }
+    Alert.alert(
+      'Confirmar finalización',
+      '¿Confirmas que deseas finalizar este incendio?',
+      [
+        {
+          text: 'No',
+          style: 'cancel',
+          onPress: () => console.log('[handleFinalizar] Cancelado por el usuario'),
         },
-      },
-    ],
-    { cancelable: true }
-  );
-}, [incendioId, reload, onSaved, closing]);
+        {
+          text: 'Sí, finalizar',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              setClosing(true);
+              
+              await finalizarCierre(incendioId);
+              await reload();
+              
+              Alert.alert('Éxito', 'Cierre finalizado correctamente');
+              onSaved?.();
+            } catch (e: any) {
+              console.error('[handleFinalizar] Error:', e);
+              const msg =
+                e?.response?.data?.error?.message ||
+                e?.response?.data?.message ||
+                e?.message ||
+                'No se pudo finalizar';
+              Alert.alert('Error al finalizar', String(msg));
+            } finally {
+              setClosing(false);
+            }
+          },
+        },
+      ],
+      { cancelable: true }
+    );
+  }, [incendioId, reload, onSaved, closing]);
 
   const handleReabrir = useCallback(async () => {
     if (!isAdmin) {
       Alert.alert('No permitido', 'Solo un administrador puede reabrir un cierre extinguido.');
       return;
     }
-
-    // 👇 PROTECCIÓN: evitar múltiples reaperturas simultáneas
     if (closing) {
       console.log('[handleReabrir] Ya hay una operación en proceso');
       return;
@@ -1178,38 +1191,34 @@ const handleFinalizar = useCallback(async () => {
                 </View>
               </View>
             ))}
-<View style={[styles.row, { justifyContent: 'flex-start' }]}>
-  <Chip
-    icon="plus"
-    mode="outlined"
-    onPress={() => {
-      Alert.alert(
-        'Agregar superficie',
-        '¿Deseas agregar una nueva fila de superficie por vegetación?',
-        [
-          {
-            text: 'No',
-            style: 'cancel',
-            onPress: () => console.log('[Agregar superficie] Cancelado'),
-          },
-          {
-            text: 'Sí, agregar',
-            onPress: () => {
-              setSv((prev) => [
-                ...prev,
-                { ubicacion: 'DENTRO_AP', categoria: 'bosque_natural', area_ha: 0 },
-              ]);
-            },
-          },
-        ],
-        { cancelable: true }
-      );
-    }}
-    textStyle={styles.txt}
-  >
-    Agregar fila
-  </Chip>
-</View>
+            <View style={[styles.row, { justifyContent: 'flex-start' }]}>
+              <Chip
+                icon="plus"
+                mode="outlined"
+                onPress={() => {
+                  Alert.alert(
+                    'Agregar superficie',
+                    '¿Deseas agregar una nueva fila de superficie por vegetación?',
+                    [
+                      { text: 'No', style: 'cancel' },
+                      {
+                        text: 'Sí, agregar',
+                        onPress: () => {
+                          setSv((prev) => [
+                            ...prev,
+                            { ubicacion: 'DENTRO_AP', categoria: 'bosque_natural', area_ha: 0 },
+                          ]);
+                        },
+                      },
+                    ],
+                    { cancelable: true }
+                  );
+                }}
+                textStyle={styles.txt}
+              >
+                Agregar fila
+              </Chip>
+            </View>
 
             <Divider style={styles.sep} />
 
@@ -1352,20 +1361,25 @@ const handleFinalizar = useCallback(async () => {
 
             <Divider style={styles.sep} />
 
-            {/* Meteo */}
+            {/* Meteorología */}
             <Text style={[styles.section, styles.txt]}>Meteorología</Text>
             <View style={styles.row}>
               <NumInput label="Temp (°C)" value={tempC} onChange={setTempC} />
               <NumInput label="HR (%)" value={hrPct} onChange={setHrPct} />
-              <NumInput label="Viento (vel)" value={vientoVel} onChange={setVientoVel} />
-              <TextInput
+              <NumInput label="vel viento" value={vientoVel} onChange={setVientoVel} />
+
+              {/* Dirección del viento: selector por lista */}
+              <Chip
                 mode="outlined"
-                dense
-                label="Viento (dir)"
-                value={vientoDir ?? ''}
-                onChangeText={(t) => setVientoDir(t || undefined)}
-                style={{ width: 125}}
-              />
+                icon="chevron-down"
+                onPress={() => setDlgVientoOpen(true)}
+                selected={!!vientoDir}
+                selectedColor="#2E7D32"
+                style={[styles.chip, !!vientoDir ? { backgroundColor: '#E8F5E9', borderColor: '#C8E6C9' } : undefined]}
+                textStyle={styles.txt}
+              >
+                {nombreCardinal(vientoDir)}
+              </Chip>
             </View>
 
             <Divider style={styles.sepLarge} />
@@ -1391,7 +1405,7 @@ const handleFinalizar = useCallback(async () => {
           <Button
             onPress={onClose}
             disabled={saving || closing}
-            style={{ marginBottom: 60 }}     // ⬅️ agrega esto
+            style={{ marginBottom: 60 }}
           >
             Cerrar
           </Button>
@@ -1470,6 +1484,17 @@ const handleFinalizar = useCallback(async () => {
           setDlgCausaOpen(false);
         }}
         onClose={() => setDlgCausaOpen(false)}
+      />
+      <SelectDialog
+        visible={dlgVientoOpen}
+        title="Dirección del viento"
+        options={CARDINALES}
+        selectedId={vientoDir}
+        onSelect={(id) => {
+          setVientoDir(id);
+          setDlgVientoOpen(false);
+        }}
+        onClose={() => setDlgVientoOpen(false)}
       />
     </Modal>
   );

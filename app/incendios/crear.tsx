@@ -72,6 +72,15 @@ export default function CrearIncendioConReporte() {
   // Control de montaje
   const isMountedRef = useRef(true);
 
+  const ensureIncendioPrefix = (raw: string) => {
+  const t = (raw ?? '').trim();
+  if (!t) return t; // el schema ya exige requerido
+  const norm = t.toLowerCase();
+  if (norm.startsWith('incendio ') || norm.startsWith('incendio:')) return t;
+  return `Incendio ${t}`;
+};
+
+
   // Catálogos
   const [medios, setMedios] = useState<Option[]>([]);
   const [deptos, setDeptos] = useState<Option[]>([]);
@@ -535,7 +544,12 @@ export default function CrearIncendioConReporte() {
                     label="Título"
                     value={values.titulo}
                     onChangeText={handleChange('titulo')}
-                    onBlur={handleBlur('titulo')}
+                    onBlur={async () => {
+                      const next = ensureIncendioPrefix(values.titulo);
+                      await setFieldValue('titulo', next, true);     
+                      await formik.setFieldTouched('titulo', true);  
+                    }}
+
                     style={styles.input}
                     error={!!(touched.titulo && errors.titulo)}
                     returnKeyType="next"
@@ -547,6 +561,7 @@ export default function CrearIncendioConReporte() {
                       }
                     }}
                   />
+
                   <HelperText type="error" visible={!!(touched.titulo && errors.titulo)}>
                     {errors.titulo as any}
                   </HelperText>

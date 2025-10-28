@@ -27,7 +27,7 @@
     },
 
     "android": {
-      "package": "com.aplicacionincendios.inab",
+      "package": "com.garmen.incendios",
       "config": {
         "googleMaps": {
           "apiKey": "AIzaSyAUMi6n-ZXA4jn-07HdeOZm8FIzeF1ADKg"
