@@ -10,13 +10,12 @@ const baseURL =
   ''
 
 export const api = axios.create({
-  baseURL,
+  baseURL: baseURL ? `${baseURL}/api` : '/api',
   timeout: 40000, // ⬅️ 20s global
 })
 
 // --- Request interceptor ---
 api.interceptors.request.use(async (config) => {
-  const token = await getToken()
   // marca tiempo de inicio para medir latencia
   ;(config as any).__start = Date.now()
 
@@ -26,13 +25,22 @@ api.interceptors.request.use(async (config) => {
     (config.headers?.['content-type'] as string) ||
     ''
   if (ct.includes('multipart/form-data')) {
-    config.timeout = Math.max(config.timeout ?? 0, 55000) 
+    config.timeout = Math.max(config.timeout ?? 0, 55000)
   }
 
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
+  // NO enviar token en rutas de autenticación
+  const isAuthRoute = config.url?.includes('/auth/login') || config.url?.includes('/auth/register') || config.url?.includes('/auth/firebase-login')
+
+  if (!isAuthRoute) {
+    const token = await getToken()
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`
+    }
+    console.log('[API REQUEST]', config.method?.toUpperCase(), config.url, token ? '✅ Bearer' : '🚫 no token', `timeout=${config.timeout}ms`)
+  } else {
+    console.log('[API REQUEST]', config.method?.toUpperCase(), config.url, '🔓 auth route - no token', `timeout=${config.timeout}ms`)
   }
-  console.log('[API REQUEST]', config.method?.toUpperCase(), config.url, token ? '✅ Bearer' : '🚫 no token', `timeout=${config.timeout}ms`)
+
   return config
 })
 

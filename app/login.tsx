@@ -18,30 +18,23 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [secure, setSecure] = useState(true);
 
-    // En tu componente de Login
-    const onSubmitLogin = async (values: { email: string; password: string }) => {
-      try {
-        setLoading(true);
-        
-        // ✅ Obtener el token FCM (ya no Expo Push Token)
-        const fcmToken = await AsyncStorage.getItem('fcm_token');
-        
-        console.log('🔍 DEBUG Login:', {
-          email: values.email,
-          hasFCMToken: !!fcmToken,
-        });
-        
-        const { token, user } = await login({
-          ...values,
-          expoPushToken: fcmToken || undefined, // Enviar FCM token
-        });
+  const onSubmitLogin = async (values: { email: string; password: string }) => {
+    try {
+      setLoading(true);
 
-      // ✅ Validación de token JWT
-      if (!token || typeof token !== 'string' || token.split('.').length !== 3) {
-        Alert.alert('Error', 'Usuario o contraseña incorrecto');
-        return;
-      }
+      const fcmToken = await AsyncStorage.getItem('fcm_token');
 
+      console.log('🔍 DEBUG Login:', {
+        email: values.email,
+        hasFCMToken: !!fcmToken,
+      });
+
+      const { token, user } = await login({
+        ...values,
+        expoPushToken: fcmToken || undefined, // Enviar FCM token
+      });
+
+      // Guardar token y usuario
       await saveToken(token);
       await saveUser(user);
 

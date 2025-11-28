@@ -18,10 +18,12 @@ interface Props {
   animation: Animated.Value;
   onClose: () => void;
   onNavigate: (route: string) => void;
-  isAdmin?: boolean; 
+  isAdmin?: boolean;
+  isInstitucion?: boolean;
 }
 
-export const MenuDrawer = ({ animation, onClose, onNavigate, isAdmin = false }: Props) => {
+export const MenuDrawer = ({ animation, onClose, onNavigate, isAdmin = false, isInstitucion = false }: Props) => {
+  const canManage = isAdmin || isInstitucion;
   const handleLogout = () => {
     Alert.alert(
       'Cerrar sesión',
@@ -73,13 +75,18 @@ export const MenuDrawer = ({ animation, onClose, onNavigate, isAdmin = false }: 
         <Text style={styles.optionText}>Incendios</Text>
       </TouchableOpacity>
 
-      {isAdmin && (
+      {canManage && (
         <>
           <Text style={[styles.section, { marginTop: 18 }]}>Administración</Text>
 
+          <TouchableOpacity style={styles.option} onPress={() => onNavigate('Sin Aprobar')}>
+            <Ionicons name="time-outline" size={20} color="#37474F" style={styles.icon} />
+            <Text style={styles.optionText}>Incendios sin aprobar</Text>
+          </TouchableOpacity>
+
           <TouchableOpacity style={styles.option} onPress={() => onNavigate('Catalogo Incendio')}>
             <Ionicons name="pricetags" size={20} color="#37474F" style={styles.icon} />
-            <Text style={styles.optionText}>Catalogos genericos</Text>
+            <Text style={styles.optionText}>Formularios de incendio</Text>
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.option} onPress={() => onNavigate('Estados')}>

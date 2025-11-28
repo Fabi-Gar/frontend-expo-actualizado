@@ -11,3 +11,12 @@ export function isAdminUser(user: any): boolean {
   const rolName = String(user?.rol?.nombre || '').toUpperCase();
   return rolName === 'ADMIN' || rolName.includes('SUPER');
 }
+
+/**
+ * Devuelve true si el usuario es miembro de una institución.
+ * Usa el flag es_miembro_institucion del backend.
+ */
+export function isInstitucionUser(user: any): boolean {
+  if (!user) return false;
+  return user.es_miembro_institucion === true;
+}

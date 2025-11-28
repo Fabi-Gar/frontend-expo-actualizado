@@ -13,7 +13,6 @@ import {
   TextInput,
   Text,
   ActivityIndicator,
-  Portal,
   Modal,
   Button,
   HelperText,
@@ -244,39 +243,37 @@ export default function RolesIndex() {
       )}
 
       {/* Modal crear/editar */}
-      <Portal>
-        <Modal
-          visible={modalVisible}
-          onDismiss={() => setModalVisible(false)}
-          contentContainerStyle={styles.modalCard}
-        >
-          <Text style={styles.modalTitle}>{editing ? 'Editar rol' : 'Nuevo rol'}</Text>
-          <TextInput
-            label="Nombre"
-            mode="outlined"
-            value={formNombre}
-            onChangeText={setFormNombre}
-            style={styles.input}
-          />
-          <TextInput
-            label="Descripción"
-            mode="outlined"
-            value={formDescripcion}
-            onChangeText={setFormDescripcion}
-            style={styles.input}
-            multiline
-          />
-          <HelperText type="info" visible>
-            Ejemplo: ADMIN, ANALISTA, OPERADOR…
-          </HelperText>
-          <View style={styles.actions}>
-            <Button onPress={() => setModalVisible(false)}>Cancelar</Button>
-            <Button mode="contained" onPress={saveFromModal}>
-              {editing ? 'Actualizar' : 'Crear'}
-            </Button>
-          </View>
-        </Modal>
-      </Portal>
+      <Modal
+        visible={modalVisible}
+        onDismiss={() => setModalVisible(false)}
+        contentContainerStyle={styles.modalCard}
+      >
+        <Text style={styles.modalTitle}>{editing ? 'Editar rol' : 'Nuevo rol'}</Text>
+        <TextInput
+          label="Nombre"
+          mode="outlined"
+          value={formNombre}
+          onChangeText={setFormNombre}
+          style={styles.input}
+        />
+        <TextInput
+          label="Descripción"
+          mode="outlined"
+          value={formDescripcion}
+          onChangeText={setFormDescripcion}
+          style={styles.input}
+          multiline
+        />
+        <HelperText type="info" visible>
+          Ejemplo: ADMIN, ANALISTA, OPERADOR…
+        </HelperText>
+        <View style={styles.actions}>
+          <Button onPress={() => setModalVisible(false)}>Cancelar</Button>
+          <Button mode="contained" onPress={saveFromModal}>
+            {editing ? 'Actualizar' : 'Crear'}
+          </Button>
+        </View>
+      </Modal>
     </View>
   );
 }

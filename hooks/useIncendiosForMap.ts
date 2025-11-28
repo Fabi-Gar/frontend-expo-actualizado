@@ -1,4 +1,3 @@
-// hooks/useIncendiosForMap.ts
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { listIncendiosArray, Incendio, getIncendiosMap } from '@/services/incendios';
 import { WeightedLatLng, getLatLngFromIncendio } from '@/app/utils/map';
@@ -7,7 +6,7 @@ type Options = {
   /** Mostrar sólo visiblesPublico===true (por defecto true) */
   onlyPublic?: boolean;
   /** Filtrar por etiquetas (ids en string/number) */
-  etiquetaIds?: Array<string | number>;
+  etiquetaIds?: (string | number)[];
   /** Tamaño de página para carga (default 2000) */
   pageSize?: number;
 };
@@ -36,6 +35,7 @@ export function useIncendiosForMap(opts: Options = {}) {
   const [items, setItems] = useState<Incendio[]>([]);
   const [loading, setLoading] = useState(false);
   const loadedOnceRef = useRef(false);
+  const isLoadingRef = useRef(false);
 
   const fetchMapFeed = useCallback(async (limit: number) => {
     try {
@@ -47,7 +47,6 @@ export function useIncendiosForMap(opts: Options = {}) {
       });
       return (resp?.items ?? []) as unknown as Incendio[];
     } catch (e) {
-      // Fallback automático si el endpoint no existe / falla
       console.warn('[useIncendiosForMap] getIncendiosMap falló, uso listIncendiosArray()', e);
       const arr = await listIncendiosArray(1, limit);
       return (arr || []) as Incendio[];
@@ -55,16 +54,21 @@ export function useIncendiosForMap(opts: Options = {}) {
   }, []);
 
   const reload = useCallback(async () => {
+    if (isLoadingRef.current) {
+      console.log('[useIncendiosForMap] Ya hay una carga en progreso, ignorando');
+      return;
+    }
+
+    isLoadingRef.current = true;
     setLoading(true);
+    
     try {
       let next: Incendio[] = [];
 
       if (etiquetaSet.size > 0) {
-        // Si hay filtros por etiqueta, necesitamos el listado completo (trae etiquetas)
         const arr = await listIncendiosArray(1, pageSize);
         next = (arr || []) as Incendio[];
       } else {
-        // Intentar feed optimizado (con thumbnail); si falla, caemos al listado completo
         next = await fetchMapFeed(pageSize);
       }
 
@@ -78,12 +82,21 @@ export function useIncendiosForMap(opts: Options = {}) {
 
       setItems(next);
       loadedOnceRef.current = true;
+
+    } catch (error) {
+      console.error('[useIncendiosForMap] Error cargando incendios:', error);
+      
     } finally {
       setLoading(false);
+      isLoadingRef.current = false;
     }
   }, [onlyPublic, etiquetaSet, pageSize, fetchMapFeed]);
 
-  useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => {
+    if (!loadedOnceRef.current) {
+      void reload();
+    }
+  }, [reload]);
 
   const heatData: WeightedLatLng[] = useMemo(() => {
     return (items || [])
@@ -98,7 +111,7 @@ export function useIncendiosForMap(opts: Options = {}) {
   }, [items]);
 
   return {
-    items,              // puede traer thumbnailUrl cuando viene del feed de mapa
+    items,              
     heatData,
     loading,
     reload,

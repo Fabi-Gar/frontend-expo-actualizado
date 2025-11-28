@@ -1,7 +1,7 @@
 // app/incendios/listaIncendios.tsx
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { View, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Image } from 'react-native';
-import { Text, TextInput, Chip, Menu, Divider, Button, Snackbar } from 'react-native-paper';
+import { Text, TextInput, Chip, Snackbar } from 'react-native-paper';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
 
@@ -9,8 +9,8 @@ import { listIncendios, listIncendiosSinAprobar, type Incendio } from '@/service
 import { getUser } from '@/session';
 import { isAdminUser } from '../utils/roles';
 import { api } from '@/client';
-import { cierreBadgeStyle, cierreColor } from '@/app/utils/cierre';
 import { getFirstPhotoUrlByIncendio } from '@/services/photos';
+import { cierreColor, cierreBadgeStyle } from '@/app/utils/estadoCierre';
 
 /* ------------------ helpers ------------------ */
 function timeAgo(iso?: string | null) {
@@ -51,16 +51,15 @@ type AprobadoFilter = 'ALL' | 'APROBADOS' | 'NO_APROBADOS';
 export default function IncendiosList() {
   const [items, setItems] = useState<Incendio[]>([]);
   const [q, setQ] = useState('');
+  const [debouncedQ, setDebouncedQ] = useState('');
   const [user, setUser] = useState<any>(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  // estados de cierre por incendio_uuid/id (dinámico)
-  const [cierreEstados, setCierreEstados] = useState<Record<string, string>>({});
-
   // cache para covers y estados; in-flight control
+  const [cierreEstados, setCierreEstados] = useState<Record<string, string>>({});
   const [covers, setCovers] = useState<Record<string, string>>({});
-  const metaCacheRef = useRef<{ 
-    estados: Record<string, string>; 
+  const metaCacheRef = useRef<{
+    estados: Record<string, string>;
     covers: Record<string, string>;
     fetchingEstados: boolean;
   }>({
@@ -73,8 +72,6 @@ export default function IncendiosList() {
 
   // filtros UI
   const [aprobFilter, setAprobFilter] = useState<AprobadoFilter>('ALL');
-  const [estadoFilterMenu, setEstadoFilterMenu] = useState(false);
-  const [selectedEstados, setSelectedEstados] = useState<string[]>([]);
 
   // paginación
   const [page, setPage] = useState(1);
@@ -94,6 +91,14 @@ export default function IncendiosList() {
   const isScrollingRef = useRef<boolean>(false);
   const scrollEndTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isMountedRef = useRef<boolean>(true);
+
+  // ==== Debounce búsqueda ====
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedQ(q);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [q]);
 
   // ==== Rate Limiting Helper ====
   const executeWithRateLimit = useCallback(async (requestFn: () => Promise<any>, minDelay: number = 1000) => {
@@ -206,6 +211,7 @@ export default function IncendiosList() {
   
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 50 });
 
+
   // ==== Estados por batch (con debounce y deduplicación) ====
   const fetchEstadosBatch = useCallback(async (arr: any[]) => {
     if (!isMountedRef.current || metaCacheRef.current.fetchingEstados) {
@@ -215,13 +221,13 @@ export default function IncendiosList() {
 
     try {
       const ids = Array.from(new Set(arr.map(it => getId(it)).filter(Boolean)));
-      
+
       // Filtrar IDs que ya están en cache o en proceso
-      const pendientes = ids.filter(id => 
-        !(id in metaCacheRef.current.estados) && 
+      const pendientes = ids.filter(id =>
+        !(id in metaCacheRef.current.estados) &&
         !inFlightEstados.current.has(id)
       );
-      
+
       if (!pendientes.length) {
         setCierreEstados(prev => ({ ...prev, ...metaCacheRef.current.estados }));
         return;
@@ -231,38 +237,38 @@ export default function IncendiosList() {
       metaCacheRef.current.fetchingEstados = true;
       pendientes.forEach(id => inFlightEstados.current.add(id));
 
-      const { data } = await executeWithRateLimit(() => 
-        api.get('/cierre/estados', { 
+      const { data } = await executeWithRateLimit(() =>
+        api.get('/api/cierre/estados', {
           params: { ids: pendientes.join(',') },
           signal: abortControllerRef.current?.signal,
           timeout: 10000,
         }),
         1200
       );
-      
+
       if (!isMountedRef.current) return;
-      
+
       const estados: Record<string, string> = {};
       for (const id of pendientes) {
         const entry = data?.byId?.[id];
-        estados[id] = entry?.estado || 'Pendiente';
+        estados[id] = entry?.estado || 'Reportado';
       }
-      
+
       metaCacheRef.current.estados = { ...metaCacheRef.current.estados, ...estados };
       setCierreEstados(prev => ({ ...prev, ...estados }));
     } catch (error: any) {
       if (error.name === 'AbortError') return;
-      
+
       console.warn('[ESTADOS] Error loading estados:', error?.message);
-      
+
       if (!isMountedRef.current) return;
-      
+
       const ids = Array.from(new Set(arr.map(it => getId(it)).filter(Boolean)));
       const pendientes = ids.filter(id => !(id in metaCacheRef.current.estados));
-      
+
       const estados: Record<string, string> = {};
-      for (const id of pendientes) estados[id] = 'Pendiente';
-      
+      for (const id of pendientes) estados[id] = 'Reportado';
+
       metaCacheRef.current.estados = { ...metaCacheRef.current.estados, ...estados };
       setCierreEstados(prev => ({ ...prev, ...estados }));
     } finally {
@@ -520,13 +526,13 @@ export default function IncendiosList() {
       }
     }
   }, [
-    aprobFilter, 
-    fetchApprovedPage, 
-    fetchPendingPage, 
-    fetchAllPage, 
-    fetchEstadosBatch, 
-    reportError, 
-    resolveCover, 
+    aprobFilter,
+    fetchApprovedPage,
+    fetchPendingPage,
+    fetchAllPage,
+    fetchEstadosBatch,
+    reportError,
+    resolveCover,
     user,
     mergeUnique
   ]); // ✅ Removido 'items' de dependencias
@@ -601,8 +607,8 @@ export default function IncendiosList() {
       if (scrollEndTimerRef.current) {
         clearTimeout(scrollEndTimerRef.current);
       }
-      
-      // Limpiar in-flight covers
+
+      // Limpiar in-flight covers y estados
       inFlightCovers.current.clear();
       inFlightEstados.current.clear();
     };
@@ -633,7 +639,7 @@ export default function IncendiosList() {
           await new Promise(resolve => setTimeout(resolve, 150));
           
           if (!isActive || !isMountedRef.current || loadingRef.current) return;
-          
+
           // Resetear cache
           metaCacheRef.current.estados = {};
           metaCacheRef.current.covers = {};
@@ -642,7 +648,7 @@ export default function IncendiosList() {
           setCovers({});
           inFlightCovers.current.clear();
           inFlightEstados.current.clear();
-          
+
           if (!isActive || !isMountedRef.current) return;
           
           await loadPage(1, true);
@@ -671,7 +677,7 @@ export default function IncendiosList() {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
-      
+
       metaCacheRef.current.estados = {};
       metaCacheRef.current.covers = {};
       metaCacheRef.current.fetchingEstados = false;
@@ -679,7 +685,7 @@ export default function IncendiosList() {
       setCovers({});
       inFlightCovers.current.clear();
       inFlightEstados.current.clear();
-      
+
       await loadPage(1, true);
       setPage(1);
     } catch (error) {
@@ -718,29 +724,12 @@ export default function IncendiosList() {
     }
   }, [hasMore, page, loadPage, refreshing]);
 
-  // Estados disponibles (desde cierreEstados de items visibles)
-  const estadosDisponibles = useMemo(() => {
-    try {
-      const ids = items.map(getId).filter(Boolean);
-      const list = ids.map(id => cierreEstados[id]).filter(Boolean);
-      return Array.from(new Set(list));
-    } catch (error) {
-      console.error('[estadosDisponibles] Error:', error);
-      return [];
-    }
-  }, [items, cierreEstados]);
-
-  // aplica búsqueda y filtro por estados dinámicos
+  // aplica búsqueda (debounced)
   const data = useMemo(() => {
     try {
-      const s = q.trim().toLowerCase();
+      const s = debouncedQ.trim().toLowerCase();
 
       return (items || []).filter((it) => {
-        const id = getId(it);
-        const estado = cierreEstados[id] || 'Pendiente';
-
-        if (selectedEstados.length && !selectedEstados.includes(estado)) return false;
-
         if (s) {
           const regionNombre =
             typeof (it as any).region === 'object' && (it as any).region
@@ -758,7 +747,7 @@ export default function IncendiosList() {
       console.error('[data filter] Error:', error);
       return items;
     }
-  }, [items, q, selectedEstados, cierreEstados]);
+  }, [items, debouncedQ]);
 
   // Handler para cambio de filtro con reset
   const handleAprobFilterChange = useCallback((newFilter: AprobadoFilter) => {
@@ -820,57 +809,6 @@ export default function IncendiosList() {
         >
           No aprobados
         </Chip>
-
-        {/* Estado (menú dinámico) */}
-        <Menu
-          visible={estadoFilterMenu}
-          onDismiss={() => setEstadoFilterMenu(false)}
-          anchor={
-            <Chip
-              style={styles.chip}
-              onPress={() => setEstadoFilterMenu(true)}
-              icon="flag"
-              selected={selectedEstados.length > 0}
-            >
-              {selectedEstados.length ? `Estados (${selectedEstados.length})` : 'Estados: Todos'}
-            </Chip>
-          }
-        >
-          {estadosDisponibles.map((nombre, i) => (
-            <React.Fragment key={nombre || `opt_${i}`}>
-              {i > 0 ? <Divider /> : null}
-              <Menu.Item
-                onPress={() => {
-                  try {
-                    setSelectedEstados(prev => {
-                      const set = new Set(prev);
-                      if (set.has(nombre)) set.delete(nombre);
-                      else set.add(nombre);
-                      return Array.from(set);
-                    });
-                  } catch (error) {
-                    console.error('[Estado filter] Error:', error);
-                  }
-                }}
-                title={nombre || '—'}
-                trailingIcon={selectedEstados.includes(nombre) ? 'check' : undefined}
-              />
-            </React.Fragment>
-          ))}
-          <Divider />
-          <View style={{ paddingHorizontal: 8, paddingVertical: 6, flexDirection: 'row', gap: 8 }}>
-            <Button onPress={() => {
-              try {
-                setSelectedEstados([]);
-                setEstadoFilterMenu(false);
-              } catch (error) {
-                console.error('[Limpiar estados] Error:', error);
-              }
-            }}>Limpiar</Button>
-            <View style={{ flex: 1 }} />
-            <Button mode="contained" onPress={() => setEstadoFilterMenu(false)}>Aplicar</Button>
-          </View>
-        </Menu>
       </View>
 
       {/* Header */}
@@ -901,8 +839,8 @@ export default function IncendiosList() {
             const itemId = getId(item);
             const updatedAt = getWhen(item);
             const aprobado = (item as any)?.aprobado === true || (item as any)?.requiere_aprobacion === false;
+            const estado = cierreEstados[itemId] || 'Reportado';
 
-            const estado = cierreEstados[itemId] || 'Pendiente';
             const flame = cierreColor(estado);
 
             const cached = covers[itemId] || metaCacheRef.current.covers[itemId] || null;
@@ -948,10 +886,10 @@ export default function IncendiosList() {
 
                   <View style={{ flexDirection: 'row', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
                     <Text style={[styles.badgeMini, aprobado ? styles.badgeOk : styles.badgeWarn]}>
-                      {aprobado ? 'Aprobado' : 'No aprobado'}
+                      {aprobado ? '✓ Aprobado' : '⏱ Pendiente'}
                     </Text>
-                    <Text style={[styles.badgeMini, cierreBadgeStyle(estado)]}>
-                      {estado ? `Estado: ${estado}` : 'Cierre: —'}
+                    <Text style={[styles.badgeMini, { backgroundColor: `${cierreColor(estado)}20`, color: cierreColor(estado) }]}>
+                      {estado}
                     </Text>
                   </View>
                 </View>

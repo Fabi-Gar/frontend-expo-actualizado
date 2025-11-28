@@ -7,6 +7,7 @@ export type UsuarioRef = {
   nombre: string;
   correo?: string;
   creadoEn?: string;
+  institucion?: { nombre: string } | null;
 } | null;
 
 export type EstadoRef = { id: string; nombre: string; color?: string | null };
@@ -68,6 +69,15 @@ export type Incendio = {
 
   portadaUrl?: string | null;
   thumbnailUrl?: string | null;
+
+  // --- Datos del reporte fusionados ---
+  departamento?: { id: string; nombre: string } | null;
+  municipio?: { id: string; nombre: string } | null;
+  lugar_poblado?: string | null;
+  finca?: string | null;
+  medio?: { id: string; nombre: string } | null;
+  telefono?: string | null;
+  reportado_en?: string | null;
 };
 
 export type Paginated<T> = {
@@ -234,6 +244,7 @@ function fromBackendIncendio(raw: any): Incendio {
         id: raw.creado_por.usuario_uuid ?? raw.creado_por.id ?? null,
         nombre: `${raw.creado_por.nombre ?? ''} ${raw.creado_por.apellido ?? ''}`.trim() || raw.creado_por.email || '',
         correo: raw.creado_por.email ?? undefined,
+        institucion: raw.creado_por.institucion ?? null,
       } as UsuarioRef)
     : raw?.creadoPor ?? null;
 
@@ -286,6 +297,15 @@ function fromBackendIncendio(raw: any): Incendio {
 
     portadaUrl,
     thumbnailUrl,
+
+    // --- Datos del reporte fusionados ---
+    departamento: raw?.departamento ?? null,
+    municipio: raw?.municipio ?? null,
+    lugar_poblado: getStr(raw, ['lugar_poblado', 'lugarPoblado']) ?? null,
+    finca: getStr(raw, ['finca']) ?? null,
+    medio: raw?.medio ?? null,
+    telefono: getStr(raw, ['telefono']) ?? null,
+    reportado_en: getDateLike(raw, ['reportado_en', 'reportadoEn']) ?? null,
   };
 
   // ⬇️ Inyectar foto suelta si el backend la incluyó (de /with-reporte multipart)
@@ -607,6 +627,10 @@ export async function hideIncendio(id: string) {
   return fromBackendIncendio(data);
 }
 
+/**
+ * LEGACY: Este endpoint ya no existe (reporte fusionado con incendio)
+ * @deprecated Use createIncendioFormData instead
+ */
 export async function createIncendioWithReporteFormData(formData: FormData) {
   const { data } = await api.post('/incendios/with-reporte', formData, {
     headers: {
@@ -615,6 +639,20 @@ export async function createIncendioWithReporteFormData(formData: FormData) {
     timeout: 60000,
   });
   return data;
+}
+
+/**
+ * Crear incendio con datos del reporte fusionados (nuevo formato)
+ * POST /incendios (multipart con 'data' JSON + archivo opcional 'file')
+ */
+export async function createIncendioFormData(formData: FormData) {
+  const { data } = await api.post('/incendios', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+    timeout: 60000,
+  });
+  return fromBackendIncendio(data);
 }
 
 export async function setEstadoIncendio(
@@ -698,4 +736,28 @@ export async function aprobarIncendio(id: string) {
 export async function rechazarIncendio(id: string, motivo: string) {
   const { data } = await api.patch(`/incendios/${id}/rechazar`, { motivo_rechazo: motivo });
   return fromBackendIncendio(data);
+}
+
+// --- historial de estados ---
+export type HistorialEstado = {
+  historial_uuid: string;
+  observacion: string | null;
+  creado_en: string;
+  estado: {
+    estado_incendio_uuid: string;
+    codigo: string;
+    nombre: string;
+    orden: number;
+  };
+  cambiado_por: {
+    usuario_uuid: string;
+    nombre: string;
+    apellido: string;
+    email: string;
+  } | null;
+};
+
+export async function getHistorialEstados(id: string): Promise<HistorialEstado[]> {
+  const { data } = await api.get<{ total: number; items: HistorialEstado[] }>(`/incendios/${id}/historial`);
+  return data.items || [];
 }

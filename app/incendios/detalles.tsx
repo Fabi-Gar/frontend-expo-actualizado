@@ -5,28 +5,27 @@ import { Text, Button, Divider, IconButton } from 'react-native-paper';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
-import { getIncendio, Incendio, aprobarIncendio, rechazarIncendio } from '@/services/incendios';
-import { getCierre, initCierre, finalizarCierre, reabrirCierre } from '@/services/cierre';
+import { getIncendio, Incendio, aprobarIncendio, rechazarIncendio, getHistorialEstados, HistorialEstado } from '@/services/incendios';
 import { api } from '@/client';
 import { getUser } from '@/session';
 import { subscribe, EVENTS } from '@/hooks/events';
 import { showToast } from '@/hooks/uiStore';
 
-import CierreEditor from '@/components/CierreEditor';
 // NUEVO: mismo helper usado en el mapa para resolver portada
 import { getFirstPhotoUrlByIncendio } from '@/services/photos';
+
+// Sistema de cierre dinámico con plantillas
+import FormularioCierre from '@/components/FormularioCierre';
+import { getFormularioCierre, FormularioCierre as FormularioCierreType } from '@/services/cierre';
 
 type Tab = 'ACT' | 'REP' | 'INFO';
 
 // --- helper para portada directa (si viene en el payload) ---
-const getCoverUrl = (it: any, ultimo?: any): string | null =>
+const getCoverUrl = (it: any): string | null =>
   it?.portadaUrl ||
   it?.foto_portada_url ||
   it?.thumbnailUrl ||
   it?.fotos?.[0]?.url ||
-  ultimo?.foto_portada_url ||
-  ultimo?.thumbnailUrl ||
-  ultimo?.fotos?.[0]?.url ||
   null;
 
 export default function DetalleIncendio() {
@@ -37,15 +36,16 @@ export default function DetalleIncendio() {
   const [, setLoading] = useState(false);
   const [user, setUser] = useState<any>(null);
   const [tab, setTab] = useState<Tab>('ACT');
-  const [cierre, setCierre] = useState<any>(null);
-
-  const [ultimoReporte, setUltimoReporte] = useState<any | null>(null);
-  const [primerReporte, setPrimerReporte] = useState<any | null>(null);
-
-  const [editorVisible, setEditorVisible] = useState(false);
 
   const [siguiendo, setSiguiendo] = useState(false);
-const [loadingSeguir, setLoadingSeguir] = useState(false);
+  const [loadingSeguir, setLoadingSeguir] = useState(false);
+
+  // Estado para cierre dinámico
+  const [formularioCierre, setFormularioCierre] = useState<FormularioCierreType | null>(null);
+  const [cierreModalVisible, setCierreModalVisible] = useState(false);
+
+  // Estado para historial de cambios
+  const [historial, setHistorial] = useState<HistorialEstado[]>([]);
 
   // Gateo de UI: no mostrar hasta que datos + imagen estén listos (o timeout)
   const [dataReady, setDataReady] = useState(false);
@@ -83,23 +83,23 @@ const [loadingSeguir, setLoadingSeguir] = useState(false);
       const data = await getIncendio(String(id));
       setItem(data);
 
-      // Último reporte (visual)
+      // Formulario de cierre dinámico
       try {
-        const { data: repUlt } = await api.get(`/reportes`, { params: { incendio_uuid: id, pageSize: 1 } });
-        setUltimoReporte((repUlt?.items || [])[0] ?? null);
-      } catch { setUltimoReporte(null); }
+        const formCierre = await getFormularioCierre(String(id));
+        setFormularioCierre(formCierre);
+      } catch (err) {
+        // Si no hay formulario, no pasa nada
+        setFormularioCierre(null);
+      }
 
-      // Primer reporte (permiso)
+      // Historial de cambios de estado
       try {
-        const { data: repPrim } = await api.get(`/reportes`, { params: { incendio_uuid: id, pageSize: 1, order: 'ASC' } });
-        setPrimerReporte((repPrim?.items || [])[0] ?? null);
-      } catch { setPrimerReporte(null); }
-
-      // Cierre
-      try {
-        const c = await getCierre(String(id));
-        setCierre(c);
-      } catch { setCierre(null); }
+        const hist = await getHistorialEstados(String(id));
+        setHistorial(hist);
+      } catch (err) {
+        // Si no hay historial, array vacío
+        setHistorial([]);
+      }
     } catch (e: any) {
       showToast({ type: 'error', message: e?.response?.data?.error || 'No se pudo cargar el incendio' });
     } finally {
@@ -109,14 +109,6 @@ const [loadingSeguir, setLoadingSeguir] = useState(false);
   }, [id]);
 
   useEffect(() => { refetch(); }, [refetch]);
-
-  const estadoCierre = useMemo(() => {
-    const sc = cierre?.secuencia_control || {};
-    if (sc?.extinguido_at) return 'Extinguido';
-    if (sc?.controlado_at) return 'Controlado';
-    if (sc?.llegada_medios_terrestres_at || sc?.llegada_medios_aereos_at) return 'En atención';
-    return 'Pendiente';
-  }, [cierre]);
 
   useEffect(() => {
     const u1 = subscribe(EVENTS.INCENDIO_UPDATED, (p) => { if (p?.id === String(id)) refetch(); });
@@ -141,27 +133,20 @@ const [loadingSeguir, setLoadingSeguir] = useState(false);
   ];
   const creadorUuid = (creatorCandidates.find(v => typeof v === 'string' && v) as string) || null;
 
-  const firstReporterUuid =
-    primerReporte?.reportado_por?.usuario_uuid ??
-    (primerReporte as any)?.reportado_por_uuid ??
-    null;
+  // Ahora el reportante es el mismo que el creador (reporte fusionado)
+  const reporterCandidates = [
+    (item as any)?.reportado_por?.usuario_uuid,
+    (item as any)?.reportado_por_uuid,
+  ];
+  const reportadorUuid = (reporterCandidates.find(v => typeof v === 'string' && v) as string) || null;
 
   const isCreator = !!(userUuid && creadorUuid && String(userUuid) === String(creadorUuid));
-  const isFirstReporter = !!(userUuid && firstReporterUuid && String(userUuid) === String(firstReporterUuid));
+  const isReporter = !!(userUuid && reportadorUuid && String(userUuid) === String(reportadorUuid));
 
   const puedeModerarse = useMemo(() => {
     if (!item || !user) return false;
-    return isAdmin || isCreator;
-  }, [isAdmin, item, user, isCreator]);
-
-  const canSeeCierre = true;
-
-  const canEditCierre = useMemo(() => {
-    if (!userUuid) return false;
-    return isAdmin || isCreator || isFirstReporter;
-  }, [isAdmin, isCreator, isFirstReporter, userUuid]);
-
-  const canFinalizeCierre = isAdmin || isCreator;
+    return isAdmin || isCreator || isReporter;
+  }, [isAdmin, item, user, isCreator, isReporter]);
 
   const isAprobado = item?.aprobado === true;
 
@@ -169,51 +154,78 @@ const [loadingSeguir, setLoadingSeguir] = useState(false);
     const f = (d?: string) => (d ? new Date(d).toLocaleString() : undefined);
     const out: { id: string; title: string; date?: string; text?: string }[] = [];
 
-    if (cierre?.updates?.length) {
-      for (const u of cierre.updates) {
-        out.push({
-          id: u.id,
-          title: u.descripcion_corta || u.tipo || 'Actualización',
-          date: f(u.creado_en),
-          text: u.creado_por_nombre ? `Por ${u.creado_por_nombre}` : undefined,
-        });
-      }
-    } else {
-      if ((item as any)?.estadoActual) {
-        const ea = (item as any).estadoActual;
-        out.push({
-          id: `estado-${ea.id}`,
-          title: `Estado: ${ea?.estado?.nombre || ''}`,
-          date: f(ea?.fecha),
-          text: ea?.cambiadoPor?.nombre ? `Por ${ea.cambiadoPor.nombre}` : undefined,
-        });
-      }
-      for (const r of ((item as any)?.reportes || [])) {
-        out.push({ id: r.id, title: 'Actualización', date: f(r.fecha as any), text: r.descripcion || '' });
-      }
+    // Agregar cambios de estado del historial
+    for (const h of historial) {
+      const cambiador = h.cambiado_por
+        ? `${h.cambiado_por.nombre} ${h.cambiado_por.apellido}`.trim()
+        : 'Sistema';
+
+      out.push({
+        id: h.historial_uuid,
+        title: `Estado: ${h.estado?.nombre || 'Desconocido'}`,
+        date: f(h.creado_en),
+        text: h.observacion || `Cambiado por ${cambiador}`,
+      });
     }
+
     return out.sort((a, b) => (new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime()));
-  }, [item, cierre]);
+  }, [historial]);
 
   const infoBasico = useMemo(() => {
     if (!item) return [];
-    const f = (d?: string | null) => (d ? new Date(d).toLocaleString() : '—');
+    const rows = [];
+
+    const f = (d?: string | null) => (d ? new Date(d).toLocaleString() : undefined);
     const lat = (item as any)?.lat ?? item?.ubicacion?.coordinates?.[1] ?? (item as any)?.centroide?.coordinates?.[1];
     const lon = (item as any)?.lng ?? (item as any)?.lon ?? item?.ubicacion?.coordinates?.[0] ?? (item as any)?.centroide?.coordinates?.[0];
 
-    return [
-      { id: 'titulo', title: 'Título', text: item.titulo || '—' },
-      { id: 'desc', title: 'Descripción', text: item.descripcion || '—' },
-      { id: 'coord', title: 'Coordenadas', text: (lat != null && lon != null) ? `${lat}, ${lon}` : '—' },
-      { id: 'aprob', title: 'Aprobado', text: isAprobado ? 'Sí' : 'No' },
-      { id: 'aprob_en', title: 'Aprobado en', text: f((item as any).aprobadoEn || (item as any).aprobado_en || null) },
-      { id: 'creado', title: 'Creado en', text: f((item as any).creadoEn || (item as any).creado_en || null) },
-    ];
+    if (item.titulo) {
+      rows.push({ id: 'titulo', title: 'Título', text: item.titulo });
+    }
+    if (item.descripcion) {
+      rows.push({ id: 'desc', title: 'Descripción', text: item.descripcion });
+    }
+    if (lat != null && lon != null) {
+      rows.push({ id: 'coord', title: 'Coordenadas', text: `${lat.toFixed(6)}, ${lon.toFixed(6)}` });
+    }
+    if ((item as any)?.departamento?.nombre) {
+      rows.push({ id: 'depto', title: 'Departamento', text: (item as any).departamento.nombre });
+    }
+    if ((item as any)?.municipio?.nombre) {
+      rows.push({ id: 'muni', title: 'Municipio', text: (item as any).municipio.nombre });
+    }
+    if ((item as any)?.lugar_poblado) {
+      rows.push({ id: 'lugar', title: 'Lugar poblado', text: (item as any).lugar_poblado });
+    }
+    if ((item as any)?.finca) {
+      rows.push({ id: 'finca', title: 'Finca', text: (item as any).finca });
+    }
+    if ((item as any)?.medio?.nombre) {
+      rows.push({ id: 'medio', title: 'Medio de reporte', text: (item as any).medio.nombre });
+    }
+    if ((item as any)?.telefono) {
+      rows.push({ id: 'tel', title: 'Teléfono', text: (item as any).telefono });
+    }
+
+    const reportadoEn = f((item as any).reportado_en || null);
+    if (reportadoEn) {
+      rows.push({ id: 'reportado', title: 'Reportado en', text: reportadoEn });
+    }
+    const creadoEn = f((item as any).creadoEn || (item as any).creado_en || null);
+    if (creadoEn) {
+      rows.push({ id: 'creado', title: 'Creado en', text: creadoEn });
+    }
+    const aprobadoEn = f((item as any).aprobadoEn || (item as any).aprobado_en || null);
+    if (aprobadoEn) {
+      rows.push({ id: 'aprob_en', title: 'Aprobado en', text: aprobadoEn });
+    }
+
+    return rows;
   }, [item, isAprobado]);
 
 
   // --- portada calculada directa (si viene en payload) ---
-  const coverUrl = useMemo(() => getCoverUrl(item, ultimoReporte), [item, ultimoReporte]);
+  const coverUrl = useMemo(() => getCoverUrl(item), [item]);
 
   // Igual que en Mapa: resolver portada con caché y servicio
   const ensureCoverUrl = useCallback(async (incendioId: string, base: any): Promise<string | null> => {
@@ -261,7 +273,6 @@ const [loadingSeguir, setLoadingSeguir] = useState(false);
         String(
           (item as any)?.id ??
           (item as any)?.incendio_uuid ??
-          (ultimoReporte as any)?.incendio_uuid ??
           ''
         );
 
@@ -271,13 +282,13 @@ const [loadingSeguir, setLoadingSeguir] = useState(false);
       }
 
       const direct = coverUrl ? encodeURI(coverUrl) : null;
-      const url = direct || (await ensureCoverUrl(incendioId, item || ultimoReporte || {}));
+      const url = direct || (await ensureCoverUrl(incendioId, item || {}));
       if (!cancelled) setResolvedCover(url || null);
     };
 
     go();
     return () => { cancelled = true; };
-  }, [item, ultimoReporte, coverUrl, ensureCoverUrl]);
+  }, [item, coverUrl, ensureCoverUrl]);
 
   // Prefetch con timeout (no bloquea indefinidamente)
   const prefetchWithTimeout = useCallback(async (url: string, ms = 5000) => {
@@ -383,17 +394,16 @@ const [loadingSeguir, setLoadingSeguir] = useState(false);
     );
   }
 
-  // KPIs (visual) del último reporte
-  const repDepto = ultimoReporte?.departamento?.nombre || '—';
-  const repMuni  = ultimoReporte?.municipio?.nombre || '—';
-  const repFecha = ultimoReporte?.reportado_en ? new Date(ultimoReporte.reportado_en).toLocaleString() : '—';
-  const repMedio = ultimoReporte?.medio?.nombre || '—';
+  // KPIs del reporte inicial (ahora en el incendio)
+  const repDepto = (item as any)?.departamento?.nombre || '—';
+  const repMuni  = (item as any)?.municipio?.nombre || '—';
+  const repFecha = (item as any)?.reportado_en ? new Date((item as any).reportado_en).toLocaleString() : '—';
+  const repMedio = (item as any)?.medio?.nombre || '—';
 
-  const repUsuario = ultimoReporte?.reportado_por || (item as any)?.creado_por || (item as any)?.creadoPor || null;
-  const repNombre = [repUsuario?.nombre, repUsuario?.apellido].filter(Boolean).join(' ') || ultimoReporte?.reportado_por_nombre || '—';
-  const repInstit = ultimoReporte?.institucion?.nombre || (repUsuario?.institucion?.nombre ?? '—');
-  const repIsAdmin = (repUsuario?.is_admin === true) ? 'Sí' : 'No';
-  const repTel = repUsuario?.telefono ?? ultimoReporte?.telefono ?? '—';
+  const repUsuario = (item as any)?.reportado_por || (item as any)?.creado_por || (item as any)?.creadoPor || null;
+  const repNombre = [repUsuario?.nombre, repUsuario?.apellido].filter(Boolean).join(' ') || (item as any)?.reportado_por_nombre || '—';
+  const repInstit = (item as any)?.institucion_reporte?.nombre || (repUsuario?.institucion?.nombre ?? '—');
+  const repTel = (item as any)?.telefono ?? repUsuario?.telefono ?? '—';
 
   const Row = ({ label, value }: { label: string; value?: string | null }) => (
     <View style={{ marginBottom: 8 }}>
@@ -426,216 +436,6 @@ const [loadingSeguir, setLoadingSeguir] = useState(false);
     );
   };
 
-  const openEditor = async () => {
-    if (!canEditCierre) return;
-    try {
-      if (!cierre) {
-        await initCierre(String(id));
-        showToast({ type: 'success', message: 'Cierre iniciado' });
-        await refetch();
-      }
-      setEditorVisible(true);
-    } catch {
-      Alert.alert('Error', 'No se pudo iniciar el cierre');
-    }
-  };
-
-  const renderCierre = () => {
-    if (!cierre) {
-      return (
-        <View style={styles.card}>
-          <Text>Sin información de cierre.</Text>
-          {canEditCierre && (
-            <Button mode="outlined" style={{ marginTop: 8 }} onPress={openEditor}>
-              Iniciar y agregar datos de cierre
-            </Button>
-          )}
-        </View>
-      );
-    }
-
-    return (
-      <>
-        <View style={{ marginBottom: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-          <StatusBadge status={estadoCierre} />
-          {canEditCierre && (
-            <Button mode="outlined" onPress={() => setEditorVisible(true)}>
-              Editar datos de cierre
-            </Button>
-          )}
-        </View>
-
-        {(cierre?.tipo_incendio_principal?.nombre || (cierre?.composicion_tipo?.length ?? 0) > 0) && (
-          <Section title="Tipo de incendio">
-            {cierre?.tipo_incendio_principal?.nombre && <Row label="Principal" value={cierre.tipo_incendio_principal.nombre} />}
-            {Array.isArray(cierre?.composicion_tipo) && cierre.composicion_tipo.length > 0 && (
-              <Row label="Composición" value={cierre.composicion_tipo.map((x: any) => `${x.tipo_incendio_nombre} ${x.pct}%`).join(' • ')} />
-            )}
-          </Section>
-        )}
-
-        {(cierre?.topografia && (cierre.topografia.plano_pct != null || cierre.topografia.ondulado_pct != null || cierre.topografia.quebrado_pct != null)) && (
-          <Section title="Topografía">
-            <Row label="Plano" value={cierre.topografia.plano_pct != null ? `${cierre.topografia.plano_pct}%` : '—'} />
-            <Row label="Ondulado" value={cierre.topografia.ondulado_pct != null ? `${cierre.topografia.ondulado_pct}%` : '—'} />
-            <Row label="Quebrado" value={cierre.topografia.quebrado_pct != null ? `${cierre.topografia.quebrado_pct}%` : '—'} />
-          </Section>
-        )}
-
-        {Array.isArray(cierre?.propiedad) && cierre.propiedad.length > 0 && (
-          <Section title="Tipo de propiedad">
-            {cierre.propiedad.map((p: any, i: number) => (
-              <Row key={`prop_${i}`} label={p.tipo_propiedad_nombre} value={p.usado ? 'Usado' : 'No usado'} />
-            ))}
-          </Section>
-        )}
-
-        {cierre?.iniciado_junto_a?.iniciado_nombre && (
-          <Section title="Iniciado junto a">
-            <Row label="Elemento" value={cierre.iniciado_junto_a.iniciado_nombre} />
-          </Section>
-        )}
-
-        {(cierre?.secuencia_control &&
-          (cierre.secuencia_control.llegada_medios_terrestres_at ||
-           cierre.secuencia_control.llegada_medios_aereos_at ||
-           cierre.secuencia_control.controlado_at ||
-           cierre.secuencia_control.extinguido_at)) && (
-          <Section title="Secuencia de control">
-            {cierre.secuencia_control.llegada_medios_terrestres_at && (
-              <Row label="Llegada medios terrestres" value={new Date(cierre.secuencia_control.llegada_medios_terrestres_at).toLocaleString()} />
-            )}
-            {cierre.secuencia_control.llegada_medios_aereos_at && (
-              <Row label="Llegada medios aéreos" value={new Date(cierre.secuencia_control.llegada_medios_aereos_at).toLocaleString()} />
-            )}
-            {cierre.secuencia_control.controlado_at && (
-              <Row label="Controlado" value={new Date(cierre.secuencia_control.controlado_at).toLocaleString()} />
-            )}
-            {cierre.secuencia_control.extinguido_at && (
-              <Row label="Extinguido" value={new Date(cierre.secuencia_control.extinguido_at).toLocaleString()} />
-            )}
-          </Section>
-        )}
-
-        {(cierre?.superficie && (cierre.superficie.area_total_ha != null ||
-          cierre.superficie.dentro_ap_ha != null ||
-          cierre.superficie.fuera_ap_ha != null ||
-          cierre.superficie.nombre_ap)) && (
-          <Section title="Superficie">
-            <Row label="Área total (ha)" value={cierre.superficie.area_total_ha != null ? String(cierre.superficie.area_total_ha) : '—'} />
-            <Row label="Dentro de AP (ha)" value={cierre.superficie.dentro_ap_ha != null ? String(cierre.superficie.dentro_ap_ha) : '—'} />
-            <Row label="Fuera de AP (ha)" value={cierre.superficie.fuera_ap_ha != null ? String(cierre.superficie.fuera_ap_ha) : '—'} />
-            {cierre.superficie.nombre_ap && <Row label="Área protegida" value={cierre.superficie.nombre_ap} />}
-          </Section>
-        )}
-
-        {Array.isArray(cierre?.superficie_vegetacion) && cierre.superficie_vegetacion.length > 0 && (
-          <Section title="Superficie por vegetación">
-            {cierre.superficie_vegetacion.map((v: any, i: number) => (
-              <Row key={`veg_${i}`} label={`${v?.ubicacion || ''} • ${v?.categoria || ''}${v?.subtipo ? ` (${v.subtipo})` : ''}`} value={v?.area_ha != null ? `${v.area_ha} ha` : '—'} />
-            ))}
-          </Section>
-        )}
-
-        {Array.isArray(cierre?.tecnicas) && cierre.tecnicas.length > 0 && (
-          <Section title="Técnicas de extinción">
-            {cierre.tecnicas.map((t: any, i: number) => (
-              <Row key={`tec_${i}`} label={t?.tecnica || 'Técnica'} value={t?.pct != null ? `${t.pct}%` : '—'} />
-            ))}
-          </Section>
-        )}
-
-        {(Array.isArray(cierre?.medios?.terrestres) && cierre.medios.terrestres.length > 0) && (
-          <Section title="Medios terrestres">
-            {cierre.medios.terrestres.map((m: any, i: number) => (
-              <Row key={`mt_${i}`} label={m.medio_terrestre_nombre} value={`Cantidad: ${m?.cantidad ?? '—'}`} />
-            ))}
-          </Section>
-        )}
-        {(Array.isArray(cierre?.medios?.aereos) && cierre.medios.aereos.length > 0) && (
-          <Section title="Medios aéreos">
-            {cierre.medios.aereos.map((m: any, i: number) => (
-              <Row key={`ma_${i}`} label={m.medio_aereo_nombre} value={`${m?.pct ?? 0}%`} />
-            ))}
-          </Section>
-        )}
-        {(Array.isArray(cierre?.medios?.acuaticos) && cierre.medios.acuaticos.length > 0) && (
-          <Section title="Medios acuáticos">
-            {cierre.medios.acuaticos.map((m: any, i: number) => (
-              <Row key={`mac_${i}`} label={m.medio_acuatico_nombre} value={`Cantidad: ${m?.cantidad ?? '—'}`} />
-            ))}
-          </Section>
-        )}
-        {(Array.isArray(cierre?.medios?.instituciones) && cierre.medios.instituciones.length > 0) && (
-          <Section title="Instituciones participantes">
-            {cierre.medios.instituciones.map((m: any, i: number) => (
-              <Row key={`mi_${i}`} label="Institución" value={m.institucion_nombre} />
-            ))}
-          </Section>
-        )}
-
-        {Array.isArray(cierre?.abastos) && cierre.abastos.length > 0 && (
-          <Section title="Abastos">
-            {cierre.abastos.map((a: any, i: number) => (
-              <Row key={`ab_${i}`} label={a?.abasto_nombre || 'Abasto'} value={`Cant: ${a?.cantidad ?? '—'}`} />
-            ))}
-          </Section>
-        )}
-
-        {(cierre?.causa?.causa_nombre || cierre?.causa?.otro_texto) && (
-          <Section title="Causa probable">
-            <Row label="Causa" value={cierre.causa.causa_nombre || cierre.causa.otro_texto || '—'} />
-          </Section>
-        )}
-
-        {(cierre?.meteo && (cierre.meteo.temp_c != null || cierre.meteo.hr_pct != null || cierre.meteo.viento_vel != null || cierre.meteo.viento_dir)) && (
-          <Section title="Condiciones meteorológicas">
-            <Row label="Temperatura" value={cierre.meteo.temp_c != null ? `${cierre.meteo.temp_c} °C` : '—'} />
-            <Row label="Humedad relativa" value={cierre.meteo.hr_pct != null ? `${cierre.meteo.hr_pct}%` : '—'} />
-            <Row label="Viento" value={[
-              cierre.meteo.viento_vel != null ? `${cierre.meteo.viento_vel} km/h` : null,
-              cierre.meteo.viento_dir || null,
-            ].filter(Boolean).join(' • ') || '—'} />
-          </Section>
-        )}
-
-        {cierre?.nota && (
-          <Section title="Notas">
-            <Text>{cierre.nota}</Text>
-          </Section>
-        )}
-
-        {/* Acciones del cierre */}
-        {canEditCierre && (
-          <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
-            {estadoCierre !== 'Extinguido' && canFinalizeCierre && (
-              <Button
-                mode="contained"
-                onPress={async () => {
-                  try { await finalizarCierre(String(id)); await refetch(); showToast({ type: 'success', message: 'Cierre finalizado' }); }
-                  catch { Alert.alert('Error', 'No se pudo finalizar'); }
-                }}
-              >
-                Finalizar
-              </Button>
-            )}
-            {isAdmin && estadoCierre === 'Extinguido' && (
-              <Button
-                mode="outlined"
-                onPress={async () => {
-                  try { await reabrirCierre(String(id)); await refetch(); showToast({ type: 'success', message: 'Cierre reabierto' }); }
-                  catch { Alert.alert('Error', 'No se pudo reabrir'); }
-                }}
-              >
-                Reabrir
-              </Button>
-            )}
-          </View>
-        )}
-      </>
-    );
-  };
-
   return (
     <>
       <ScrollView contentContainerStyle={styles.container}>
@@ -650,9 +450,24 @@ const [loadingSeguir, setLoadingSeguir] = useState(false);
 
         {/* Header */}
         <View style={styles.header}>
-          <View>
+          <View style={{ flex: 1 }}>
             <Text style={styles.title}>{item.titulo}</Text>
-            <Text style={styles.sub}>{estadoCierre}</Text>
+            {/* Badge de estado de aprobación */}
+            {item.aprobado && (
+              <View style={{ backgroundColor: '#E8F5E9', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4, alignSelf: 'flex-start', marginTop: 4 }}>
+                <Text style={{ color: '#2E7D32', fontSize: 12, fontWeight: 'bold' }}>✓ Aprobado</Text>
+              </View>
+            )}
+            {!item.aprobado && item.requiereAprobacion && !item.motivoRechazo && (
+              <View style={{ backgroundColor: '#FFF3E0', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4, alignSelf: 'flex-start', marginTop: 4 }}>
+                <Text style={{ color: '#E65100', fontSize: 12, fontWeight: 'bold' }}>⏱ Pendiente de aprobación</Text>
+              </View>
+            )}
+            {item.motivoRechazo && (
+              <View style={{ backgroundColor: '#FFEBEE', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 4, alignSelf: 'flex-start', marginTop: 4 }}>
+                <Text style={{ color: '#C62828', fontSize: 12, fontWeight: 'bold' }}>✗ Rechazado</Text>
+              </View>
+            )}
           </View>
 
           <IconButton
@@ -684,25 +499,66 @@ const [loadingSeguir, setLoadingSeguir] = useState(false);
         </View>
 
         {/* Estado/Aprobado */}
-        <View style={styles.kpis}>
-          <View style={styles.kpi}><Text style={styles.kpiTop}>Estado</Text><Text style={styles.kpiBottom}>{estadoCierre}</Text></View>
-          <View style={styles.kpi}><Text style={styles.kpiTop}>Aprobado</Text><Text style={styles.kpiBottom}>{isAprobado ? 'Sí' : 'No'}</Text></View>
-        </View>
+
 
         <Text style={styles.meta}>
           Creado por {[((item as any)?.creado_por?.nombre || (item as any)?.creadoPor?.nombre), ((item as any)?.creado_por?.apellido || (item as any)?.creadoPor?.apellido)].filter(Boolean).join(' ') || '—'}
           {(item as any).creadoEn || (item as any).creado_en ? ` • ${new Date(((item as any).creadoEn || (item as any).creado_en)).toLocaleString()}` : ''}
         </Text>
 
+        {/* Mostrar motivo de rechazo si existe */}
+        {item?.motivoRechazo && (
+          <View style={{ backgroundColor: '#FFEBEE', padding: 12, borderRadius: 8, borderLeftWidth: 4, borderLeftColor: '#C62828', marginBottom: 12 }}>
+            <Text style={{ fontWeight: 'bold', color: '#C62828', marginBottom: 4 }}>⚠️ Incendio Rechazado</Text>
+            <Text style={{ color: '#555' }}>Motivo: {item.motivoRechazo}</Text>
+            {(item as any).rechazadoEn && (
+              <Text style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
+                Rechazado el {new Date((item as any).rechazadoEn).toLocaleString()}
+              </Text>
+            )}
+          </View>
+        )}
+
         {/* Aprobación / Rechazo */}
         {(!isAprobado && puedeModerarse) && (
           <View style={{ flexDirection: 'row', gap: 10 }}>
             <Button mode="contained" style={[styles.mainBtn, { backgroundColor: '#2E7D32' }]}
-              onPress={async () => { try { await aprobarIncendio(String(id)); await refetch(); showToast({ type: 'success', message: 'Incendio aprobado' }); } catch { Alert.alert('Error', 'No se pudo aprobar'); } }}>
+              onPress={async () => {
+                try {
+                  await aprobarIncendio(String(id));
+                  await refetch();
+                  showToast({ type: 'success', message: 'Incendio aprobado' });
+                } catch {
+                  Alert.alert('Error', 'No se pudo aprobar');
+                }
+              }}>
               Aprobar
             </Button>
             <Button mode="contained" style={[styles.mainBtn, { backgroundColor: '#C62828' }]}
-              onPress={async () => { try { await rechazarIncendio(String(id), 'Revisión: no aprobado'); await refetch(); showToast({ type: 'info', message: 'Incendio rechazado' }); } catch { Alert.alert('Error', 'No se pudo rechazar'); } }}>
+              onPress={() => {
+                Alert.prompt(
+                  'Rechazar incendio',
+                  'Indica el motivo del rechazo:',
+                  [
+                    { text: 'Cancelar', style: 'cancel' },
+                    {
+                      text: 'Rechazar',
+                      style: 'destructive',
+                      onPress: async (motivo: string | undefined) => {
+                        const motivoFinal = motivo?.trim() || 'Sin motivo especificado';
+                        try {
+                          await rechazarIncendio(String(id), motivoFinal);
+                          await refetch();
+                          showToast({ type: 'info', message: 'Incendio rechazado' });
+                        } catch {
+                          Alert.alert('Error', 'No se pudo rechazar');
+                        }
+                      }
+                    }
+                  ],
+                  'plain-text'
+                );
+              }}>
               Rechazar
             </Button>
           </View>
@@ -711,7 +567,7 @@ const [loadingSeguir, setLoadingSeguir] = useState(false);
         {/* Tabs */}
         <View style={styles.tabsWrap}>
           <View style={styles.tabsCentered}>
-            <TouchableOpacity onPress={() => setTab('ACT')}><Text style={[styles.tab, tab === 'ACT' && styles.tabSel]}>Actualizaciones</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => setTab('ACT')}><Text style={[styles.tab, tab === 'ACT' && styles.tabSel]}>Historial</Text></TouchableOpacity>
             <TouchableOpacity onPress={() => setTab('REP')}><Text style={[styles.tab, tab === 'REP' && styles.tabSel]}>Reportante</Text></TouchableOpacity>
             <TouchableOpacity onPress={() => setTab('INFO')}><Text style={[styles.tab, tab === 'INFO' && styles.tabSel]}>Información</Text></TouchableOpacity>
           </View>
@@ -721,14 +577,14 @@ const [loadingSeguir, setLoadingSeguir] = useState(false);
         <View style={{ paddingHorizontal: 4 }}>
           {tab === 'ACT' && (
             <View style={{ paddingVertical: 12 }}>
-              <Text style={styles.sectionTitle}>Historial / Reportes</Text>
+              <Text style={styles.sectionTitle}>Historial de cambios</Text>
               {updates.length ? updates.map((u) => (
                 <View key={u.id} style={styles.card}>
                   <Text style={{ fontWeight: 'bold' }}>{u.title}</Text>
-                  {u.date ? <Text style={{ color: '#666' }}>{u.date}</Text> : null}
-                  {!!u.text && <Text style={{ marginTop: 4 }}>{u.text}</Text>}
+                  {u.date ? <Text style={{ color: '#666', fontSize: 12 }}>{u.date}</Text> : null}
+                  {!!u.text && <Text style={{ marginTop: 4, color: '#555' }}>{u.text}</Text>}
                 </View>
-              )) : <Text>No hay actualizaciones.</Text>}
+              )) : <Text style={{ color: '#999', textAlign: 'center', marginTop: 16 }}>No hay cambios registrados.</Text>}
             </View>
           )}
 
@@ -738,7 +594,6 @@ const [loadingSeguir, setLoadingSeguir] = useState(false);
               <View style={styles.card}>
                 <Row label="Nombre" value={repNombre} />
                 <Row label="Institución" value={repInstit} />
-                <Row label="Admin" value={repIsAdmin} />
                 <Row label="Teléfono" value={repTel} />
               </View>
             </View>
@@ -756,10 +611,43 @@ const [loadingSeguir, setLoadingSeguir] = useState(false);
                 ))}
               </View>
 
-              {canSeeCierre && (
+              {/* Sección de cierre dinámico */}
+              {puedeModerarse && formularioCierre && (
                 <View style={{ marginTop: 16 }}>
-                  <Text style={styles.sectionTitle}>Cierre</Text>
-                  {renderCierre()}
+                  <Text style={styles.sectionTitle}>Formulario de Cierre</Text>
+
+                  {formularioCierre.extinguido && (
+                    <View style={{ backgroundColor: '#E8F5E9', padding: 12, borderRadius: 8, marginBottom: 12, borderLeftWidth: 4, borderLeftColor: '#2E7D32' }}>
+                      <Text style={{ color: '#2E7D32', fontWeight: 'bold' }}>✓ Incendio Extinguido</Text>
+                    </View>
+                  )}
+
+                  <Button
+                    mode="contained"
+                    onPress={() => setCierreModalVisible(true)}
+                    style={{ marginBottom: 12 }}
+                  >
+                    {formularioCierre.extinguido ? 'Ver datos de cierre' : 'Completar formulario de cierre'}
+                  </Button>
+
+                  {/* Resumen de respuestas */}
+                  <View style={styles.card}>
+                    <Text style={{ fontSize: 14, fontWeight: '500', marginBottom: 8 }}>
+                      {formularioCierre.plantilla.nombre}
+                    </Text>
+                    {formularioCierre.secciones.map((seccion) => {
+                      const respuestasCompletas = seccion.campos.filter((c) => c.respuesta).length;
+                      const total = seccion.campos.length;
+
+                      return (
+                        <View key={seccion.seccion_uuid} style={{ marginVertical: 4 }}>
+                          <Text style={{ fontSize: 13, color: '#666' }}>
+                            {seccion.nombre}: {respuestasCompletas}/{total} completado
+                          </Text>
+                        </View>
+                      );
+                    })}
+                  </View>
                 </View>
               )}
             </View>
@@ -767,15 +655,15 @@ const [loadingSeguir, setLoadingSeguir] = useState(false);
         </View>
       </ScrollView>
 
-      <CierreEditor
-        visible={editorVisible}
-        incendioId={String(id)}
-        onClose={() => setEditorVisible(false)}
+      {/* Modal de formulario de cierre */}
+      <FormularioCierre
+        visible={cierreModalVisible}
+        incendioUuid={String(id)}
+        onClose={() => setCierreModalVisible(false)}
         onSaved={async () => {
-          setEditorVisible(false);
           await refetch();
-          showToast({ type: 'success', message: 'Cierre actualizado' });
         }}
+        canFinalize={isAdmin}
       />
     </>
   );

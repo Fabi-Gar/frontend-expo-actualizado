@@ -4,7 +4,7 @@ import {
   View, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Alert, ScrollView,
 } from 'react-native';
 import {
-  Appbar, TextInput, Text, ActivityIndicator, Portal, Modal, Button, Switch, Menu,
+  Appbar, TextInput, Text, ActivityIndicator, Modal, Button, Switch, Menu,
 } from 'react-native-paper';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
@@ -287,66 +287,64 @@ export default function UsuariosIndex() {
       )}
 
       {/* Modal con Scroll */}
-      <Portal>
-        <Modal
-          visible={modalVisible}
-          onDismiss={() => setModalVisible(false)}
-          contentContainerStyle={[styles.modalCard, { maxHeight: '90%' }]}
-        >
-          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }}>
-            <Text style={styles.modalTitle}>{editing ? 'Editar usuario' : 'Nuevo usuario'}</Text>
+      <Modal
+        visible={modalVisible}
+        onDismiss={() => setModalVisible(false)}
+        contentContainerStyle={[styles.modalCard, { maxHeight: '90%' }]}
+      >
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }}>
+          <Text style={styles.modalTitle}>{editing ? 'Editar usuario' : 'Nuevo usuario'}</Text>
 
-            <TextInput label="Nombre" value={formNombre} onChangeText={setFormNombre} style={styles.input} />
-            <TextInput label="Apellido" value={formApellido} onChangeText={setFormApellido} style={styles.input} />
-            <TextInput label="Correo" value={formCorreo} onChangeText={setFormCorreo} autoCapitalize="none" keyboardType="email-address" style={styles.input} />
-            <TextInput label="Teléfono (opcional)" value={formTelefono} onChangeText={setFormTelefono} keyboardType="phone-pad" style={styles.input} />
+          <TextInput label="Nombre" value={formNombre} onChangeText={setFormNombre} style={styles.input} />
+          <TextInput label="Apellido" value={formApellido} onChangeText={setFormApellido} style={styles.input} />
+          <TextInput label="Correo" value={formCorreo} onChangeText={setFormCorreo} autoCapitalize="none" keyboardType="email-address" style={styles.input} />
+          <TextInput label="Teléfono (opcional)" value={formTelefono} onChangeText={setFormTelefono} keyboardType="phone-pad" style={styles.input} />
 
-            <TextInput
-              label={editing ? 'Nueva contraseña (opcional)' : 'Contraseña'}
-              value={formPassword}
-              onChangeText={setFormPassword}
-              secureTextEntry
-              style={styles.input}
-              placeholder={editing ? 'Dejar vacío para no cambiar' : undefined}
-            />
+          <TextInput
+            label={editing ? 'Nueva contraseña (opcional)' : 'Contraseña'}
+            value={formPassword}
+            onChangeText={setFormPassword}
+            secureTextEntry
+            style={styles.input}
+            placeholder={editing ? 'Dejar vacío para no cambiar' : undefined}
+          />
 
-            <Text style={{ marginTop: 8, marginBottom: 4 }}>Rol:</Text>
-            {roles.map(r => {
-              const rid = (r as any).id ?? (r as any).rol_uuid;
-              return (
-                <TouchableOpacity key={rid} style={styles.rolOption} onPress={() => setFormRolId(rid as string)}>
-                  <Ionicons name={formRolId === rid ? 'radio-button-on' : 'radio-button-off'} size={20} />
-                  <Text style={{ marginLeft: 6 }}>{r.nombre}</Text>
-                </TouchableOpacity>
-              );
-            })}
-
-            <Text style={{ marginTop: 12, marginBottom: 4 }}>Institución:</Text>
-
-            <TouchableOpacity style={styles.rolOption} onPress={() => setFormInstitucionId(null)}>
-              <Ionicons name={formInstitucionId === null ? 'radio-button-on' : 'radio-button-off'} size={20} />
-              <Text style={{ marginLeft: 6 }}>Sin institución</Text>
-            </TouchableOpacity>
-
-            {instituciones.map(inst => (
-              <TouchableOpacity key={inst.id} style={styles.rolOption} onPress={() => setFormInstitucionId(inst.id)}>
-                <Ionicons name={formInstitucionId === inst.id ? 'radio-button-on' : 'radio-button-off'} size={20} />
-                <Text style={{ marginLeft: 6 }}>{inst.nombre}</Text>
+          <Text style={{ marginTop: 8, marginBottom: 4 }}>Rol:</Text>
+          {roles.map(r => {
+            const rid = (r as any).id ?? (r as any).rol_uuid;
+            return (
+              <TouchableOpacity key={rid} style={styles.rolOption} onPress={() => setFormRolId(rid as string)}>
+                <Ionicons name={formRolId === rid ? 'radio-button-on' : 'radio-button-off'} size={20} />
+                <Text style={{ marginLeft: 6 }}>{r.nombre}</Text>
               </TouchableOpacity>
-            ))}
+            );
+          })}
 
-            <View style={styles.switchRow}>
-              <Text>Es administrador</Text>
-              <Switch value={formIsAdmin} onValueChange={setFormIsAdmin} />
-            </View>
+          <Text style={{ marginTop: 12, marginBottom: 4 }}>Institución:</Text>
 
-            <View style={styles.actions}>
-              <Button onPress={() => setModalVisible(false)}>Cancelar</Button>
-              <Button mode="contained" onPress={saveFromModal}>{editing ? 'Actualizar' : 'Crear'}</Button>
-            </View>
-          </ScrollView>
-        </Modal>
-      </Portal>
+          <TouchableOpacity style={styles.rolOption} onPress={() => setFormInstitucionId(null)}>
+            <Ionicons name={formInstitucionId === null ? 'radio-button-on' : 'radio-button-off'} size={20} />
+            <Text style={{ marginLeft: 6 }}>Sin institución</Text>
+          </TouchableOpacity>
+
+          {instituciones.map(inst => (
+            <TouchableOpacity key={inst.id} style={styles.rolOption} onPress={() => setFormInstitucionId(inst.id)}>
+              <Ionicons name={formInstitucionId === inst.id ? 'radio-button-on' : 'radio-button-off'} size={20} />
+              <Text style={{ marginLeft: 6 }}>{inst.nombre}</Text>
+            </TouchableOpacity>
+          ))}
+
+          <View style={styles.switchRow}>
+            <Text>Es administrador</Text>
+            <Switch value={formIsAdmin} onValueChange={setFormIsAdmin} />
+          </View>
+
+          <View style={styles.actions}>
+            <Button onPress={() => setModalVisible(false)}>Cancelar</Button>
+            <Button mode="contained" onPress={saveFromModal}>{editing ? 'Actualizar' : 'Crear'}</Button>
+          </View>
+        </ScrollView>
+      </Modal>
     </View>
   );
 }

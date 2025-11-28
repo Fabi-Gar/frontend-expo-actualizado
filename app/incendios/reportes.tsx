@@ -13,42 +13,43 @@ import { getUser } from '@/session';
 // ===== Utils =====
 type Punto = { type: 'Point'; coordinates: [number, number] }; // [lon, lat]
 
-type Reporte = {
-  reporte_uuid: string;
+// Ahora los datos vienen directamente del incendio (reporte fusionado)
+type MiIncendio = {
+  incendio_uuid: string;
+  titulo?: string | null;
+  descripcion?: string | null;
+  requiere_aprobacion: boolean;
+  aprobado: boolean;
+  aprobado_en?: string | null;
+  rechazado_en?: string | null;
+  motivo_rechazo?: string | null;
+  centroide?: Punto | null;
+  creado_en: string;
+  reportado_en?: string | null;
   reportado_por_nombre?: string | null;
   telefono?: string | null;
-  reportado_en: string;
-  observaciones?: string | null;
-  ubicacion?: Punto | null;
+  lugar_poblado?: string | null;
   departamento?: { nombre: string } | null;
   municipio?: { nombre: string } | null;
-  lugar_poblado?: string | null;
-
-  incendio: {
-    incendio_uuid: string;
-    titulo?: string | null;
-    descripcion?: string | null;
-    requiere_aprobacion: boolean;
-    aprobado: boolean;
-    aprobado_en?: string | null;
-    rechazado_en?: string | null;
-    motivo_rechazo?: string | null;
-    centroide?: Punto | null;
-    creado_en: string;
-    actualizado_en: string;
-  };
+  medio?: { nombre: string } | null;
+  creado_por?: {
+    usuario_uuid: string;
+    nombre: string;
+    apellido: string;
+    email: string;
+  } | null;
 };
 
 type Resp = {
   total: number;
   page: number;
   pageSize: number;
-  items: Reporte[];
+  items: MiIncendio[];
 };
 
-const getLatLng = (r: Reporte) => {
+const getLatLng = (item: MiIncendio) => {
   try {
-    const p = r.ubicacion || r.incendio.centroide;
+    const p = item.centroide;
     if (!p || p.type !== 'Point' || !Array.isArray(p.coordinates)) return null;
     const [lng, lat] = p.coordinates;
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
@@ -95,7 +96,7 @@ export default function MisReportes() {
   const [isAdmin, setIsAdmin] = useState(false);
 
   // ===== Estado de lista/paginación =====
-  const [items, setItems] = useState<Reporte[]>([]);
+  const [items, setItems] = useState<MiIncendio[]>([]);
   const [page, setPage] = useState(1);
   const pageSize = 20; // Constante, no necesita useState
   const [total, setTotal] = useState(0);
@@ -169,7 +170,7 @@ export default function MisReportes() {
         setLoadingMore(true);
       }
 
-      const { data } = await api.get<Resp>('/reportes/mios', {
+      const { data } = await api.get<Resp>('/incendios/mios', {
         params: { page: p, pageSize },
         signal: ctrl.signal,
         timeout: 15000,
@@ -202,7 +203,7 @@ export default function MisReportes() {
         e?.response?.data?.message ||
         e?.response?.data?.error ||
         e?.message ||
-        'No se pudieron cargar tus reportes.';
+        'No se pudieron cargar tus incendios.';
       setErrorMsg(String(msg));
     } finally {
       if (abortRef.current === ctrl) {
@@ -280,40 +281,39 @@ export default function MisReportes() {
   }, []);
 
   // ===== Render de cada tarjeta (memoizado) =====
-  const renderItem = useCallback(({ item }: { item: Reporte }) => {
+  const renderItem = useCallback(({ item }: { item: MiIncendio }) => {
     try {
       const latlng = getLatLng(item);
 
       const estadoChip = (() => {
         try {
-          const inc = item.incendio;
-          if (inc.rechazado_en) {
+          if (item.rechazado_en) {
             return (
-              <Chip 
-                compact 
-                style={{ backgroundColor: '#FFEBEE' }} 
+              <Chip
+                compact
+                style={{ backgroundColor: '#FFEBEE' }}
                 textStyle={{ color: '#C62828' }}
               >
                 Rechazado
               </Chip>
             );
           }
-          if (inc.requiere_aprobacion && !inc.aprobado) {
+          if (item.requiere_aprobacion && !item.aprobado) {
             return (
-              <Chip 
-                compact 
-                style={{ backgroundColor: '#FFF3E0' }} 
+              <Chip
+                compact
+                style={{ backgroundColor: '#FFF3E0' }}
                 textStyle={{ color: '#EF6C00' }}
               >
                 Pend. aprobación
               </Chip>
             );
           }
-          if (inc.aprobado) {
+          if (item.aprobado) {
             return (
-              <Chip 
-                compact 
-                style={{ backgroundColor: '#E8F5E9' }} 
+              <Chip
+                compact
+                style={{ backgroundColor: '#E8F5E9' }}
                 textStyle={{ color: '#2E7D32' }}
               >
                 Aprobado
@@ -327,7 +327,7 @@ export default function MisReportes() {
         }
       })();
 
-      const titulo = item.incendio.titulo || 'Incendio sin título';
+      const titulo = item.titulo || 'Incendio sin título';
       const subt = [
         item.departamento?.nombre,
         item.municipio?.nombre,
@@ -337,8 +337,8 @@ export default function MisReportes() {
       // Lógica de visibilidad del botón "Detalles"
       const canSeeDetails =
         isAdmin ||
-        item.incendio.aprobado ||
-        !item.incendio.requiere_aprobacion;
+        item.aprobado ||
+        !item.requiere_aprobacion;
 
       return (
         <Card style={{ marginHorizontal: 12, marginBottom: 10 }} mode="elevated">
@@ -364,8 +364,8 @@ export default function MisReportes() {
               <Text variant="bodySmall" style={{ color: '#555' }}>
                 Reportado: {fmtDate(item.reportado_en)}
               </Text>
-              {!!item.observaciones && (
-                <Text variant="bodyMedium">Obs.: {item.observaciones}</Text>
+              {!!item.descripcion && (
+                <Text variant="bodyMedium">Desc.: {item.descripcion}</Text>
               )}
               {latlng && (
                 <Text variant="bodySmall" style={{ color: '#555' }}>
@@ -400,9 +400,9 @@ export default function MisReportes() {
                 compact
                 onPress={() => {
                   try {
-                    router.push({ 
-                      pathname: '/incendios/detalles', 
-                      params: { id: item.incendio.incendio_uuid } 
+                    router.push({
+                      pathname: '/incendios/detalles',
+                      params: { id: item.incendio_uuid }
                     });
                   } catch (error) {
                     console.error('[Detalles button] Error:', error);
@@ -450,14 +450,14 @@ const HeaderComponent = useMemo(() => (
         onPress={() => router.back()}
         style={{ margin: 0 }}
       />
-      <Text style={{ 
-        color: '#fff', 
-        fontWeight: 'bold', 
+      <Text style={{
+        color: '#fff',
+        fontWeight: 'bold',
         fontSize: 18,
         flex: 1,
         textAlign: 'center',
       }}>
-        Mis reportes
+        Mis incendios
       </Text>
       <View style={{ width: 40 }} />
     </View>
@@ -478,7 +478,7 @@ const HeaderComponent = useMemo(() => (
     <View style={{ alignItems: 'center', marginTop: 40, paddingHorizontal: 24 }}>
       <Ionicons name="list" size={36} color="#9E9E9E" />
       <Text style={{ marginTop: 8, color: '#777' }}>
-        Aún no tienes reportes.
+        Aún no has reportado incendios.
       </Text>
     </View>
   ), []);
@@ -494,7 +494,7 @@ const HeaderComponent = useMemo(() => (
   }, [loadingMore]);
 
   // ===== Key extractor estable =====
-  const keyExtractor = useCallback((item: Reporte) => item.reporte_uuid, []);
+  const keyExtractor = useCallback((item: MiIncendio) => item.incendio_uuid, []);
 
   return (
     <View style={{ flex: 1, backgroundColor: '#fafafa' }}>

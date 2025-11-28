@@ -13,7 +13,6 @@ import {
   TextInput,
   Text,
   ActivityIndicator,
-  Portal,
   Modal,
   Button,
   HelperText,
@@ -211,45 +210,43 @@ export default function EstadosIndex() {
       )}
 
       {/* Modal crear/editar */}
-      <Portal>
-        <Modal visible={modalVisible} onDismiss={closeModal} contentContainerStyle={styles.modalCard}>
-          <Text style={styles.modalTitle}>{editing ? 'Editar estado' : 'Nuevo estado'}</Text>
+      <Modal visible={modalVisible} onDismiss={closeModal} contentContainerStyle={styles.modalCard}>
+        <Text style={styles.modalTitle}>{editing ? 'Editar estado' : 'Nuevo estado'}</Text>
 
-          <TextInput
-            label="Código"
-            mode="outlined"
-            value={formCodigo}
-            onChangeText={setFormCodigo}
-            style={styles.input}
-          />
-          <HelperText type="info" visible>Ejemplos: ACT, REP, OFF… (único)</HelperText>
+        <TextInput
+          label="Código"
+          mode="outlined"
+          value={formCodigo}
+          onChangeText={setFormCodigo}
+          style={styles.input}
+        />
+        <HelperText type="info" visible>Ejemplos: ACT, REP, OFF… (único)</HelperText>
 
-          <TextInput
-            label="Nombre"
-            mode="outlined"
-            value={formNombre}
-            onChangeText={setFormNombre}
-            style={styles.input}
-          />
-          <HelperText type="info" visible>Ejemplos: Activo, Reportado, Apagado…</HelperText>
+        <TextInput
+          label="Nombre"
+          mode="outlined"
+          value={formNombre}
+          onChangeText={setFormNombre}
+          style={styles.input}
+        />
+        <HelperText type="info" visible>Ejemplos: Activo, Reportado, Apagado…</HelperText>
 
-          <TextInput
-            label="Orden (entero ≥ 0)"
-            mode="outlined"
-            value={formOrden}
-            onChangeText={setFormOrden}
-            keyboardType="number-pad"
-            style={styles.input}
-          />
+        <TextInput
+          label="Orden (entero ≥ 0)"
+          mode="outlined"
+          value={formOrden}
+          onChangeText={setFormOrden}
+          keyboardType="number-pad"
+          style={styles.input}
+        />
 
-          <View style={styles.actions}>
-            <Button mode="text" onPress={closeModal} disabled={loading}>Cancelar</Button>
-            <Button mode="contained" onPress={saveFromModal} loading={loading} disabled={loading}>
-              {editing ? 'Actualizar' : 'Crear'}
-            </Button>
-          </View>
-        </Modal>
-      </Portal>
+        <View style={styles.actions}>
+          <Button mode="text" onPress={closeModal} disabled={loading}>Cancelar</Button>
+          <Button mode="contained" onPress={saveFromModal} loading={loading} disabled={loading}>
+            {editing ? 'Actualizar' : 'Crear'}
+          </Button>
+        </View>
+      </Modal>
     </View>
   );
 }

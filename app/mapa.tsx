@@ -23,7 +23,6 @@ import ImageViewerModal from '@/components/ImageViewerModal';
 import OfflineBanner from '@/components/OfflineBanner';
 import EmptyState from '@/components/EmptyState';
 import { MapTypeDrawer, DRAWER_WIDTH } from '@/components/MapTypeDrawer';
-import { LeyendaDrawer } from '@/components/LeyendaDrawer';
 import { MenuDrawer } from '@/components/MenuDrawer';
 
 import { api } from '@/client';
@@ -32,9 +31,9 @@ import { useIncendiosForMap } from '../hooks/useIncendiosForMap';
 import { useFirmsGT } from '../hooks/useFirmsGT';
 import { useMapRegion } from '../hooks/useMapRegion';
 import { getLatLngFromIncendio } from '@/app/utils/map';
-import { isAdminUser } from './utils/roles';
-import { cierreColor } from '@/app/utils/cierre';
+import { isAdminUser, isInstitucionUser } from './utils/roles';
 import { getFirstPhotoUrlByIncendio } from '@/services/photos';
+import { cierreColor } from '@/app/utils/estadoCierre';
 
 // ========================================
 // CONSTANTS
@@ -72,11 +71,9 @@ const PREVIEW_CARD_WIDTH = 260;
 const PREVIEW_CARD_HEIGHT = 210;
 const MAX_LIST_HEIGHT = 340;
 const FIRMS_LIST_HEIGHT = 280;
-const FILTERS_LIST_HEIGHT = 320;
 const MIN_ZOOM_FOR_FIRM_DOTS = 0.05;
 
 type DaysOption = 1 | 3 | 7;
-type Etiqueta = { id: string | number; nombre: string };
 
 const screen = Dimensions.get('window');
 
@@ -99,19 +96,14 @@ export default function Mapa() {
   const [offline, setOffline] = useState(false);
   const [heatmapEnabled, setHeatmapEnabled] = useState<boolean>(true);
 
-  // Optimization: disable marker repainting after delay
-  const [trackViews, setTrackViews] = useState(true);
-  useEffect(() => {
-    const timer = setTimeout(() => setTrackViews(false), MARKER_OPTIMIZATION_DELAY);
-    return () => clearTimeout(timer);
-  }, []);
+  // Optimization: disable marker repainting for better performance
+  // Set to false to prevent unnecessary re-renders when marker content changes
+  const trackViews = false;
 
   // Drawer animations
   const drawerAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
-  const leyendaAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
   const menuAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [leyendaOpen, setLeyendaOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
 
   // Map hooks
@@ -123,21 +115,15 @@ export default function Mapa() {
   // User state
   const [currentUser, setCurrentUser] = useState<any>(null);
   const isAdmin = isAdminUser(currentUser);
-
-  // Filter state
-  const [allEtiquetas] = useState<Etiqueta[]>([]);
-  const [selectedEtiquetaIds, setSelectedEtiquetaIds] = useState<number[]>([]);
-  const [filtersOpen, setFiltersOpen] = useState(false);
+  const isInstitucion = isInstitucionUser(currentUser);
 
   // Data hooks
   const {
     items,
-
     loading,
     reload
   } = useIncendiosForMap({
     onlyPublic: true,
-    etiquetaIds: selectedEtiquetaIds,
     pageSize: 700,
   });
 
@@ -198,7 +184,11 @@ export default function Mapa() {
       const noInternet = !(state.isConnected && state.isInternetReachable);
       setOffline(!!noInternet);
     });
-    return () => subscription && subscription();
+    return () => {
+      if (subscription) {
+        subscription();
+      }
+    };
   }, []);
 
   const [errorMsg, setErrorMsg] = useState<string>('');
@@ -326,78 +316,17 @@ export default function Mapa() {
   // ========================================
   // METADATA CACHING SYSTEM
   // ========================================
-  const [cierreEstados, setCierreEstados] = useState<Record<string, string>>({});
   const [reportantes, setReportantes] = useState<Record<string, string>>({});
   const metaCacheRef = useRef<{
-    estados: Record<string, string>;
     reportantes: Record<string, string>;
     covers: Record<string, string>;
-    fetchingEstados: boolean;
   }>({
-    estados: {},
     reportantes: {},
     covers: {},
-    fetchingEstados: false,
   });
 
   const abortersRef = useRef<Map<string, AbortController>>(new Map());
   const inFlightRepRef = useRef<Map<string, Promise<void>>>(new Map());
-
-  // Fetch estados in batch with protection against infinite loops
-  const fetchEstadosBatch = useCallback(async (arr: any[]) => {
-    if (metaCacheRef.current.fetchingEstados) {
-      console.log('[fetchEstadosBatch] Ya hay un fetch en progreso, ignorando');
-      return;
-    }
-
-    const ids = Array.from(new Set(arr.map(it => String(it?.id ?? it?.incendio_uuid)).filter(Boolean)));
-    const pendientes = ids.filter(id => !(id in metaCacheRef.current.estados));
-
-    if (!pendientes.length) {
-      setCierreEstados(prev => ({ ...prev, ...metaCacheRef.current.estados }));
-      return;
-    }
-
-    metaCacheRef.current.fetchingEstados = true;
-
-    try {
-      const { data } = await api.get('/cierre/estados', {
-        params: { ids: pendientes.join(',') },
-        timeout: FETCH_TIMEOUT_MS,
-      });
-
-      const estados: Record<string, string> = {};
-      for (const id of pendientes) {
-        const entry = data?.byId?.[id];
-        estados[id] = entry?.estado || 'Pendiente';
-      }
-
-      metaCacheRef.current.estados = { ...metaCacheRef.current.estados, ...estados };
-      setCierreEstados(prev => ({ ...prev, ...estados }));
-    } catch (e: any) {
-      console.error('[fetchEstadosBatch] Error:', e?.response?.status ?? e?.message);
-      const estados: Record<string, string> = {};
-      for (const id of pendientes) estados[id] = 'Pendiente';
-      metaCacheRef.current.estados = { ...metaCacheRef.current.estados, ...estados };
-      setCierreEstados(prev => ({ ...prev, ...estados }));
-    } finally {
-      metaCacheRef.current.fetchingEstados = false;
-    }
-  }, []);
-
-  const fetchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Effect to fetch estados with debounce and protection
-  useEffect(() => {
-    if (!items?.length) return;
-    if (fetchTimeoutRef.current) clearTimeout(fetchTimeoutRef.current);
-    fetchTimeoutRef.current = setTimeout(() => {
-      fetchEstadosBatch(items as any[]);
-    }, FETCH_ESTADOS_DEBOUNCE_MS);
-    return () => {
-      if (fetchTimeoutRef.current) clearTimeout(fetchTimeoutRef.current);
-    };
-  }, [items, fetchEstadosBatch]);
 
   // Fetch reportante with protection
   const ensureReportante = useCallback(async (id: string, item: any) => {
@@ -565,25 +494,6 @@ export default function Mapa() {
     }).start(() => setDrawerOpen(false));
   };
 
-  const openLeyenda = () => {
-    setLeyendaOpen(true);
-    Animated.timing(leyendaAnim, {
-      toValue: 0,
-      duration: 300,
-      easing: Easing.out(Easing.ease),
-      useNativeDriver: false
-    }).start();
-  };
-
-  const closeLeyenda = () => {
-    Animated.timing(leyendaAnim, {
-      toValue: -DRAWER_WIDTH,
-      duration: 300,
-      easing: Easing.in(Easing.ease),
-      useNativeDriver: false
-    }).start(() => setLeyendaOpen(false));
-  };
-
   const openMenu = () => {
     setMenuOpen(true);
     Animated.timing(menuAnim, {
@@ -613,6 +523,7 @@ export default function Mapa() {
     if (route === 'preferencias') { router.push('/preferencias'); return; }
     if (route === 'Reportes') { closeMenu(); router.push('/incendios/reportes'); return; }
     if (route === 'listaIncendios') { closeMenu(); router.push('/incendios/listaIncendios'); return; }
+    if (route === 'Sin Aprobar') { closeMenu(); router.push('/admin/sin-aprobar'); return; }
     if (route === 'Catalogo Incendio') { closeMenu(); router.push('/admin/catalogos'); return; }
     if (route === 'Estados') { closeMenu(); router.push('/admin/estados'); return; }
     if (route === 'Regiones') { closeMenu(); router.push('/admin/regiones'); return; }
@@ -644,40 +555,19 @@ export default function Mapa() {
 
 
   const [showIncendios, setShowIncendios] = useState<boolean>(true);
-  const [estadosOpen, setEstadosOpen] = useState(false);
-
-  const estadosDisponibles = useMemo(() => {
-    const byId = new Set(items.map((it: any) => String(it?.id ?? it?.incendio_uuid)).filter(Boolean));
-    const list = Array.from(byId).map(id => cierreEstados[id]).filter(Boolean);
-    return Array.from(new Set(list));
-  }, [items, cierreEstados]);
-
-  const [selectedEstados, setSelectedEstados] = useState<string[]>([]);
 
   const itemsFiltrados = useMemo(() => {
-    const base = showIncendios ? items : [];
-    if (!selectedEstados.length) return base;
-    return base.filter((it: any) => {
-      const id = String(it?.id ?? it?.incendio_uuid);
-      const estado = cierreEstados[id] || 'Pendiente';
-      return selectedEstados.includes(estado);
-    });
-  }, [items, showIncendios, selectedEstados, cierreEstados]);
-
-  const estadosInUseForLegend = useMemo(() => {
-    const ids = itemsFiltrados.map((it: any) => String(it?.id ?? it?.incendio_uuid)).filter(Boolean);
-    const list = ids.map(id => cierreEstados[id]).filter(Boolean);
-    return Array.from(new Set(list));
-  }, [itemsFiltrados, cierreEstados]);
+    return showIncendios ? items : [];
+  }, [items, showIncendios]);
 
   const renderMarkers = () => (
     <>
-      {itemsFiltrados.map((item) => {
-        const coord = getLatLngFromIncendio(item as any);
+      {itemsFiltrados.map((item: any) => {
+        const coord = getLatLngFromIncendio(item);
         if (!coord) return null;
 
-        const id = String((item as any).id ?? (item as any).incendio_uuid);
-        const estado = cierreEstados[id] || 'Pendiente';
+        const id = String(item.id ?? item.incendio_uuid);
+        const estado = item?.estadoActual?.estado?.nombre || 'Reportado';
         const color = cierreColor(estado);
 
         const handleMarkerPress = async () => {
@@ -690,7 +580,7 @@ export default function Mapa() {
             Promise.all([
               ensureReportante(id, item),
               (async () => {
-                const cached = metaCacheRef.current.covers[id] || getCoverUrl(item as any);
+                const cached = metaCacheRef.current.covers[id] || getCoverUrl(item);
                 if (!cached) {
                   const resolved = await ensureCoverUrl(id, item);
                   if (resolved) setPreview(prev => (prev && prev.id === id ? { ...prev } : prev));
@@ -722,18 +612,6 @@ export default function Mapa() {
   // ========================================
   // REFRESH HANDLERS
   // ========================================
-  const refetchEstadosAll = useCallback(async () => {
-    try {
-      metaCacheRef.current.estados = {};
-      setCierreEstados({});
-      if (items?.length) {
-        await fetchEstadosBatch(items as any[]);
-      }
-    } catch (err) {
-      console.error('[refetchEstadosAll] Error:', err);
-    }
-  }, [items, fetchEstadosBatch]);
-
   const isRefreshingRef = useRef(false);
 
   const handleRefresh = useCallback(async () => {
@@ -745,14 +623,13 @@ export default function Mapa() {
     isRefreshingRef.current = true;
     try {
       await safeReload();
-      await refetchEstadosAll();
     } catch (err) {
       console.error('[handleRefresh] Error:', err);
       setErrorMsg('Error al refrescar los datos');
     } finally {
       isRefreshingRef.current = false;
     }
-  }, [safeReload, refetchEstadosAll]);
+  }, [safeReload]);
 
   // ========================================
   // RENDER
@@ -833,7 +710,7 @@ export default function Mapa() {
 
       {preview && (() => {
         const { id, item, pt } = preview;
-        const estado = cierreEstados[id] || 'Pendiente';
+        const estado = (item as any)?.estadoActual?.estado?.nombre || 'Reportado';
         const publicadoPor =
           reportantes[id] ||
           (() => {
@@ -930,11 +807,10 @@ export default function Mapa() {
 
       <OfflineBanner visible={offline} onRetry={() => safeReload()} />
 
-      {(drawerOpen || leyendaOpen || menuOpen) && (
+      {(drawerOpen || menuOpen) && (
         <TouchableWithoutFeedback onPress={() => {
           try {
             if (drawerOpen) closeDrawer();
-            if (leyendaOpen) closeLeyenda();
             if (menuOpen) closeMenu();
           } catch (err) {
             console.error('[Overlay] Error al cerrar:', err);
@@ -951,16 +827,13 @@ export default function Mapa() {
           closeDrawer(); 
         }} 
       />
-      <LeyendaDrawer 
-        animation={leyendaAnim} 
-        statesInUse={estadosInUseForLegend} 
-        getColor={(estado) => cierreColor(estado)} 
-      />
-      <MenuDrawer 
-        animation={menuAnim} 
-        onClose={closeMenu} 
-        onNavigate={handleMenuNavigate} 
-        isAdmin={isAdmin} 
+      {/* LeyendaDrawer removed - old cierre estado system */}
+      <MenuDrawer
+        animation={menuAnim}
+        onClose={closeMenu}
+        onNavigate={handleMenuNavigate}
+        isAdmin={isAdmin}
+        isInstitucion={isInstitucion}
       />
 
       <View style={[styles.header, { paddingTop: insets.top + 12, paddingBottom: 15 }]}>
@@ -1013,10 +886,9 @@ export default function Mapa() {
               console.error('[CustomButton] Error al centrar usuario:', err);
               reportError(err, 'No se pudo centrar en tu ubicación');
             }
-          }} 
+          }}
         />
-        <CustomButton icon="book" label="Leyenda" onPress={openLeyenda} />
-        <CustomButton 
+        <CustomButton
           icon="refresh" 
           label={loading ? '...' : 'Recargar'} 
           onPress={handleRefresh} 
@@ -1076,142 +948,8 @@ export default function Mapa() {
           >
             {showIncendios ? 'Incendios: ON' : 'Incendios: OFF'}
           </Chip>
-
-          <Chip 
-            style={styles.chip} 
-            icon="filter" 
-            onPress={() => setEstadosOpen(true)} 
-            accessibilityRole="button" 
-            accessibilityLabel="Filtrar por estado"
-          >
-            {selectedEstados.length ? `Estados (${selectedEstados.length})` : 'Estados: Todos'}
-          </Chip>
         </ScrollView>
       </View>
-
-      <Modal 
-        visible={filtersOpen} 
-        transparent 
-        animationType="fade" 
-        onRequestClose={() => setFiltersOpen(false)}
-      >
-        <TouchableWithoutFeedback onPress={() => setFiltersOpen(false)}>
-          <View style={styles.modalOverlay} />
-        </TouchableWithoutFeedback>
-
-        <View style={[styles.bottomSheet, { paddingBottom: insets.bottom + 12 }]}>
-          <Text style={styles.sheetTitle}>Filtrar por etiquetas</Text>
-
-          <FlatList
-            data={allEtiquetas}
-            keyExtractor={(etiqueta) => String(etiqueta.id)}
-            style={{ maxHeight: FILTERS_LIST_HEIGHT }}
-            renderItem={({ item }) => {
-              const checked = selectedEtiquetaIds.includes(Number(item.id));
-              return (
-                <TouchableOpacity
-                  style={styles.sheetRow}
-                  activeOpacity={0.7}
-                  onPress={() => {
-                    try {
-                      setSelectedEtiquetaIds(prev => {
-                        const set = new Set(prev);
-                        if (checked) set.delete(Number(item.id));
-                        else set.add(Number(item.id));
-                        return Array.from(set);
-                      });
-                    } catch (err) {
-                      console.error('[Filter] Error al actualizar etiquetas:', err);
-                    }
-                  }}
-                  accessibilityRole="checkbox"
-                  accessibilityState={{ checked }}
-                  accessibilityLabel={`Etiqueta ${item.nombre}`}
-                >
-                  <Checkbox status={checked ? 'checked' : 'unchecked'} />
-                  <Text>{item.nombre}</Text>
-                </TouchableOpacity>
-              );
-            }}
-            ListEmptyComponent={<Text>No hay etiquetas</Text>}
-          />
-
-          <View style={styles.sheetActions}>
-            <Button onPress={() => setSelectedEtiquetaIds([])}>Limpiar</Button>
-            <View style={{ flex: 1 }} />
-            <Button mode="contained" onPress={() => setFiltersOpen(false)}>Aplicar</Button>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal 
-        visible={estadosOpen} 
-        transparent 
-        animationType="fade" 
-        onRequestClose={() => setEstadosOpen(false)}
-      >
-        <TouchableWithoutFeedback onPress={() => setEstadosOpen(false)}>
-          <View style={styles.modalOverlay} />
-        </TouchableWithoutFeedback>
-
-        <View style={[styles.bottomSheet, { paddingBottom: insets.bottom + 12 }]}>
-          <Text style={styles.sheetTitle}>Filtrar por estados</Text>
-
-          <FlatList
-            data={estadosDisponibles}
-            keyExtractor={(estado) => String(estado)}
-            style={{ maxHeight: MAX_LIST_HEIGHT }}
-            renderItem={({ item }) => {
-              const checked = selectedEstados.includes(item);
-              return (
-                <TouchableOpacity
-                  style={styles.sheetRow}
-                  activeOpacity={0.7}
-                  onPress={() => {
-                    try {
-                      setSelectedEstados(prev => {
-                        const set = new Set(prev);
-                        if (checked) set.delete(item);
-                        else set.add(item);
-                        return Array.from(set);
-                      });
-                    } catch (err) {
-                      console.error('[Filter Estados] Error:', err);
-                    }
-                  }}
-                  accessibilityRole="checkbox"
-                  accessibilityState={{ checked }}
-                  accessibilityLabel={`Estado ${item}`}
-                >
-                  <Checkbox status={checked ? 'checked' : 'unchecked'} />
-                  <View style={{ 
-                    width: 10, 
-                    height: 10, 
-                    borderRadius: 5, 
-                    backgroundColor: cierreColor(item), 
-                    marginRight: 8 
-                  }} />
-                  <Text>{item}</Text>
-                </TouchableOpacity>
-              );
-            }}
-            ListEmptyComponent={<Text>No hay estados disponibles</Text>}
-          />
-
-          <View style={styles.sheetActions}>
-            <Button onPress={() => {
-              try {
-                setSelectedEstados(estadosDisponibles);
-              } catch (err) {
-                console.error('[Estados] Error al seleccionar todos:', err);
-              }
-            }}>Todos</Button>
-            <Button onPress={() => setSelectedEstados([])}>Limpiar</Button>
-            <View style={{ flex: 1 }} />
-            <Button mode="contained" onPress={() => setEstadosOpen(false)}>Aplicar</Button>
-          </View>
-        </View>
-      </Modal>
 
       <Modal 
         visible={firmsOpen} 

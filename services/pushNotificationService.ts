@@ -281,21 +281,22 @@ export class PushNotificationService {
 
   /**
    * Refrescar token (útil para manejar cambios de token)
+   * @returns Función para desuscribir el listener
    */
   static setupTokenRefreshListener() {
-    messaging().onTokenRefresh(async (newToken) => {
+    return messaging().onTokenRefresh(async (newToken) => {
       console.log('🔄 Token FCM actualizado:', newToken.substring(0, 30) + '...');
-      
+
       // Guardar nuevo token
       await AsyncStorage.setItem('fcm_token', newToken);
-      
+
       // Re-registrar en backend
       try {
         const userStr = await AsyncStorage.getItem('user');
         if (userStr) {
           const user = JSON.parse(userStr);
           const userId = user.usuario_uuid;
-          
+
           if (userId) {
             await this.registerToken(userId, newToken);
           }

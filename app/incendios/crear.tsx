@@ -30,7 +30,8 @@ import MapPickerModal from '@/components/MapPickerModal';
 import SingleSelectModal from '@/components/SelectorModals/SingleSelectModal';
 
 import { listCatalogoItems, listDepartamentos, listMunicipios } from '@/services/catalogos';
-import { createIncendioWithReporteFormData } from '@/services/incendios';
+import { createIncendioFormData } from '@/services/incendios';
+import { getUser } from '@/session';
 
 type Option = { id: string; label: string };
 
@@ -46,12 +47,12 @@ type FormValues = {
   muniId: string | null;
 
   telefono: string;
-  observaciones: string;
   lugarPoblado: string;
   finca: string;
 };
 
-const schema = Yup.object({
+// Schema dinámico que se crea según si el usuario tiene teléfono
+const createSchema = (userHasPhone: boolean) => Yup.object({
   titulo: Yup.string().trim().required('Requerido'),
   descripcion: Yup.string().trim().nullable(),
   lat: Yup.string().trim().required('Selecciona ubicación'),
@@ -59,8 +60,9 @@ const schema = Yup.object({
   medioId: Yup.string().required('Selecciona un medio'),
   deptoId: Yup.string().nullable(),
   muniId: Yup.string().nullable(),
-  telefono: Yup.string().nullable(),
-  observaciones: Yup.string().nullable(),
+  telefono: userHasPhone
+    ? Yup.string().nullable()
+    : Yup.string().required('Requerido (no tienes teléfono en tu perfil)'),
   lugarPoblado: Yup.string().nullable(),
   finca: Yup.string().nullable(),
 });
@@ -80,6 +82,10 @@ export default function CrearIncendioConReporte() {
   return `Incendio ${t}`;
 };
 
+
+  // Usuario
+  const [user, setUser] = useState<any>(null);
+  const [userHasPhone, setUserHasPhone] = useState(false);
 
   // Catálogos
   const [medios, setMedios] = useState<Option[]>([]);
@@ -113,7 +119,6 @@ export default function CrearIncendioConReporte() {
   // ===== Refs para navegación entre inputs =====
   const descRef = useRef<any>(null);
   const telRef = useRef<any>(null);
-  const obsRef = useRef<any>(null);
   const lugarRef = useRef<any>(null);
   const fincaRef = useRef<any>(null);
 
@@ -208,21 +213,28 @@ export default function CrearIncendioConReporte() {
           }
         }
 
-        const [mediosResp, deptosResp] = await Promise.all([
+        // Cargar usuario y catálogos en paralelo
+        const [mediosResp, deptosResp, userData] = await Promise.all([
           listCatalogoItems('medios', { pageSize: 200, signal: ac.signal }),
           listDepartamentos(ac.signal),
+          getUser().catch(() => null),
         ]);
 
         if (!isActive || ac.signal.aborted || !isMountedRef.current) return;
 
-        const mediosData = (mediosResp.items || []).map((m: any) => ({ 
-          id: String(m.id), 
-          label: m.nombre 
+        // Procesar usuario
+        const hasPhone = !!(userData?.telefono && String(userData.telefono).trim());
+        setUser(userData);
+        setUserHasPhone(hasPhone);
+
+        const mediosData = (mediosResp.items || []).map((m: any) => ({
+          id: String(m.id),
+          label: m.nombre
         }));
-        
-        const deptosData = (deptosResp || []).map((d: any) => ({ 
-          id: String(d.id), 
-          label: d.nombre 
+
+        const deptosData = (deptosResp || []).map((d: any) => ({
+          id: String(d.id),
+          label: d.nombre
         }));
 
         setMedios(mediosData);
@@ -236,8 +248,7 @@ export default function CrearIncendioConReporte() {
           medioId: null,
           deptoId: null,
           muniId: null,
-          telefono: '',
-          observaciones: '',
+          telefono: hasPhone ? String(userData.telefono) : '',
           lugarPoblado: '',
           finca: '',
         };
@@ -257,7 +268,6 @@ export default function CrearIncendioConReporte() {
           deptoId: null,
           muniId: null,
           telefono: '',
-          observaciones: '',
           lugarPoblado: '',
           finca: '',
         };
@@ -383,34 +393,31 @@ export default function CrearIncendioConReporte() {
 
       // Preparar FormData
       const formData = new FormData();
-      
+
       try {
-        // Datos del incendio y reporte como JSON
-        const payload = {
+        // Datos del incendio con campos del reporte fusionados
+        const payload: any = {
           titulo: values.titulo.trim(),
           descripcion: values.descripcion?.trim() || null,
-          centroide: { 
-            type: 'Point' as const, 
-            coordinates: [lonN, latN] as [number, number] 
+          centroide: {
+            type: 'Point' as const,
+            coordinates: [lonN, latN] as [number, number]
           },
-          reporte: {
-            medio_uuid: String(values.medioId),
-            ubicacion: { 
-              type: 'Point' as const, 
-              coordinates: [lonN, latN] as [number, number] 
-            },
-            reportado_en: new Date().toISOString(),
-            observaciones: values.observaciones?.trim() || null,
-            telefono: values.telefono?.trim() || null,
-            departamento_uuid: values.deptoId || null,
-            municipio_uuid: values.muniId || null,
-            lugar_poblado: values.lugarPoblado?.trim() || null,
-            finca: values.finca?.trim() || null,
-          },
+          medio_uuid: String(values.medioId),
+          reportado_en: new Date().toISOString(),
+          departamento_uuid: values.deptoId || null,
+          municipio_uuid: values.muniId || null,
+          lugar_poblado: values.lugarPoblado?.trim() || null,
+          finca: values.finca?.trim() || null,
         };
 
-        formData.append('incendio', JSON.stringify(payload));
-        formData.append('reporte', JSON.stringify(payload.reporte));
+        // Solo incluir teléfono si el usuario NO tiene teléfono guardado
+        if (!userHasPhone) {
+          payload.telefono = values.telefono?.trim() || null;
+        }
+        // Si userHasPhone es true, no enviamos telefono y el backend usará el del perfil
+
+        formData.append('data', JSON.stringify(payload));
       } catch (e) {
         console.error('[CREAR] Error preparando FormData:', e);
         throw new Error('Error al preparar los datos');
@@ -440,8 +447,8 @@ export default function CrearIncendioConReporte() {
         }
       }
 
-      // Usar el servicio FormData
-      const result = await createIncendioWithReporteFormData(formData);
+      // Usar el servicio FormData con nuevo formato
+      const result = await createIncendioFormData(formData);
 
       if (!isMountedRef.current) return;
 
@@ -519,7 +526,7 @@ export default function CrearIncendioConReporte() {
         >
           <Formik<FormValues>
             initialValues={seed}
-            validationSchema={schema}
+            validationSchema={createSchema(userHasPhone)}
             onSubmit={handleSubmitCreate}
             validateOnChange
             validateOnBlur
@@ -721,44 +728,43 @@ export default function CrearIncendioConReporte() {
                     placeholder="Toca para seleccionar"
                   />
 
-                  <TextInput
-                    ref={telRef}
-                    label="Teléfono (opcional)"
-                    value={values.telefono}
-                    onChangeText={handleChange('telefono')}
-                    onBlur={handleBlur('telefono')}
-                    style={styles.input}
-                    keyboardType="phone-pad"
-                    returnKeyType="next"
-                    textContentType="telephoneNumber"
-                    autoComplete="tel"
-                    onSubmitEditing={() => {
-                      try {
-                        obsRef.current?.focus();
-                      } catch (error) {
-                        console.error('[tel onSubmit] Error:', error);
-                      }
-                    }}
-                  />
+                  {/* Teléfono: solo si el usuario NO tiene teléfono en su perfil */}
+                  {!userHasPhone && (
+                    <>
+                      <TextInput
+                        ref={telRef}
+                        label="Teléfono *"
+                        value={values.telefono}
+                        onChangeText={handleChange('telefono')}
+                        onBlur={handleBlur('telefono')}
+                        style={styles.input}
+                        keyboardType="phone-pad"
+                        returnKeyType="next"
+                        textContentType="telephoneNumber"
+                        autoComplete="tel"
+                        error={!!(touched.telefono && errors.telefono)}
+                        onSubmitEditing={() => {
+                          try {
+                            lugarRef.current?.focus();
+                          } catch (error) {
+                            console.error('[tel onSubmit] Error:', error);
+                          }
+                        }}
+                      />
+                      <HelperText type="error" visible={!!(touched.telefono && errors.telefono)}>
+                        {errors.telefono as any}
+                      </HelperText>
+                    </>
+                  )}
 
-                  <TextInput
-                    ref={obsRef}
-                    label="Observaciones (opcional)"
-                    value={values.observaciones}
-                    onChangeText={handleChange('observaciones')}
-                    onBlur={handleBlur('observaciones')}
-                    style={styles.input}
-                    multiline
-                    returnKeyType="next"
-                    blurOnSubmit
-                    onSubmitEditing={() => {
-                      try {
-                        lugarRef.current?.focus();
-                      } catch (error) {
-                        console.error('[obs onSubmit] Error:', error);
-                      }
-                    }}
-                  />
+                  {/* Mensaje informativo si el usuario tiene teléfono */}
+                  {userHasPhone && (
+                    <View style={{ marginBottom: 12, padding: 12, backgroundColor: '#E8F5E9', borderRadius: 8 }}>
+                      <Text style={{ color: '#2E7D32', fontSize: 14 }}>
+                        ✓ Usando tu teléfono: {user?.telefono}
+                      </Text>
+                    </View>
+                  )}
 
                   <TextInput
                     ref={lugarRef}

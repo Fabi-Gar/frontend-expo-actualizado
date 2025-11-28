@@ -32,16 +32,8 @@ export type Municipio = {
   actualizadoEn?: string;
 }
 
-/* Catálogos de cierre / soporte */
-export type TipoIncendio = Opcion
-export type TipoPropiedad = Opcion
-export type Causa = Opcion
-export type IniciadoJuntoA = Opcion
-export type MedioAereo = Opcion
-export type MedioTerrestre = Opcion
-export type MedioAcuatico = Opcion
-export type Abasto = Opcion
-export type TecnicaExtincion = Opcion
+/* Catálogos activos */
+export type Medio = Opcion
 
 /* ============================
  * Helpers
@@ -57,15 +49,6 @@ export type CatalogItem = CatalogoItem;
 export type CatalogName =
   | 'medios'
   | 'instituciones'
-  | 'tipos_incendio'
-  | 'tipo_propiedad'
-  | 'causas_catalogo'
-  | 'iniciado_junto_a_catalogo'
-  | 'medios_aereos_catalogo'
-  | 'medios_terrestres_catalogo'
-  | 'medios_acuaticos_catalogo'
-  | 'abastos_catalogo'
-  | 'tecnicas_extincion_catalogo'
   | 'roles';
 
 /** ===== Caché en memoria + de-dupe de requests ===== */
@@ -113,24 +96,10 @@ const norm = (r: any): Opcion => ({
     r?.institucion_uuid ||
     r?.departamento_uuid ||
     r?.municipio_uuid ||
-    r?.tipo_incendio_id ||
-    r?.tipo_propiedad_id ||
-    r?.causa_id ||
-    r?.iniciado_id ||
-    r?.medio_id ||
-    r?.abasto_id ||
-    r?.tecnica_id ||
+    r?.medio_uuid ||
     r?.id ||
     r?.uuid,
-  nombre:
-    r?.nombre ??
-    r?.tipo_propiedad_nombre ??
-    r?.causa_nombre ??
-    r?.iniciado_nombre ??
-    r?.medio_nombre ??
-    r?.abasto_nombre ??
-    r?.tecnica_nombre ??
-    '',
+  nombre: r?.nombre ?? '',
 })
 
 /* ============================
@@ -455,94 +424,19 @@ export async function deleteCatalogoItem(catalogo: string, id: UUID) {
 }
 
 /* ============================
- * Wrappers “legacy”
- * ============================ */
-export const getTiposIncendio = (signal?: AbortSignal) => getCatalogo('tipos_incendio', signal)
-export const createTipoIncendio = (p: { nombre: string }) => postCatalogo('tipos_incendio', p)
-export const updateTipoIncendio = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('tipos_incendio', id, p)
-export const deleteTipoIncendio = (id: UUID) => deleteCatalogo('tipos_incendio', id)
-
-export const getTiposPropiedad = (signal?: AbortSignal) => getCatalogo('tipo_propiedad', signal)
-export const createTipoPropiedad = (p: { nombre: string }) => postCatalogo('tipo_propiedad', p)
-export const updateTipoPropiedad = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('tipo_propiedad', id, p)
-export const deleteTipoPropiedad = (id: UUID) => deleteCatalogo('tipo_propiedad', id)
-
-export const getCausas = (signal?: AbortSignal) => getCatalogo('causas_catalogo', signal)
-export const createCausa = (p: { nombre: string }) => postCatalogo('causas_catalogo', p)
-export const updateCausa = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('causas_catalogo', id, p)
-export const deleteCausa = (id: UUID) => deleteCatalogo('causas_catalogo', id)
-
-export const getIniciadoJuntoA = (signal?: AbortSignal) => getCatalogo('iniciado_junto_a_catalogo', signal)
-export const createIniciadoJuntoA = (p: { nombre: string }) => postCatalogo('iniciado_junto_a_catalogo', p)
-export const updateIniciadoJuntoA = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('iniciado_junto_a_catalogo', id, p)
-export const deleteIniciadoJuntoA = (id: UUID) => deleteCatalogo('iniciado_junto_a_catalogo', id)
-
-export const getMediosAereos = (signal?: AbortSignal) => getCatalogo('medios_aereos_catalogo', signal)
-export const createMedioAereo = (p: { nombre: string }) => postCatalogo('medios_aereos_catalogo', p)
-export const updateMedioAereo = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('medios_aereos_catalogo', id, p)
-export const deleteMedioAereo = (id: UUID) => deleteCatalogo('medios_aereos_catalogo', id)
-
-export const getMediosTerrestres = (signal?: AbortSignal) => getCatalogo('medios_terrestres_catalogo', signal)
-export const createMedioTerrestre = (p: { nombre: string }) => postCatalogo('medios_terrestres_catalogo', p)
-export const updateMedioTerrestre = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('medios_terrestres_catalogo', id, p)
-export const deleteMedioTerrestre = (id: UUID) => deleteCatalogo('medios_terrestres_catalogo', id)
-
-export const getMediosAcuaticos = (signal?: AbortSignal) => getCatalogo('medios_acuaticos_catalogo', signal)
-export const createMedioAcuatico = (p: { nombre: string }) => postCatalogo('medios_acuaticos_catalogo', p)
-export const updateMedioAcuatico = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('medios_acuaticos_catalogo', id, p)
-export const deleteMedioAcuatico = (id: UUID) => deleteCatalogo('medios_acuaticos_catalogo', id)
-
-export const getAbastos = (signal?: AbortSignal) => getCatalogo('abastos_catalogo', signal)
-export const createAbasto = (p: { nombre: string }) => postCatalogo('abastos_catalogo', p)
-export const updateAbasto = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('abastos_catalogo', id, p)
-export const deleteAbasto = (id: UUID) => deleteCatalogo('abastos_catalogo', id)
-
-export const getTecnicasExtincion = (signal?: AbortSignal) => getCatalogo('tecnicas_extincion_catalogo', signal)
-export const createTecnicaExtincion = (p: { nombre: string }) => postCatalogo('tecnicas_extincion_catalogo', p)
-export const updateTecnicaExtincion = (id: UUID, p: Partial<{ nombre: string }>) => patchCatalogo('tecnicas_extincion_catalogo', id, p)
-export const deleteTecnicaExtincion = (id: UUID) => deleteCatalogo('tecnicas_extincion_catalogo', id)
-
-/* ============================
  * Pre-carga en paralelo
  * ============================ */
 export async function preloadCatalogosBasicos(signal?: AbortSignal) {
   const [
     estados,
-    tiposIncendio,
-    tiposPropiedad,
-    causas,
-    iniciado,
-    mediosAereos,
-    mediosTerrestres,
-    mediosAcuaticos,
-    abastos,
-    tecnicas,
     departamentos,
   ] = await Promise.all([
     getEstadosIncendio(signal),
-    getTiposIncendio(signal),
-    getTiposPropiedad(signal),
-    getCausas(signal),
-    getIniciadoJuntoA(signal),
-    getMediosAereos(signal),
-    getMediosTerrestres(signal),
-    getMediosAcuaticos(signal),
-    getAbastos(signal),
-    getTecnicasExtincion(signal),
     listDepartamentos(signal),
   ])
 
   return {
     estados,
-    tiposIncendio,
-    tiposPropiedad,
-    causas,
-    iniciado,
-    mediosAereos,
-    mediosTerrestres,
-    mediosAcuaticos,
-    abastos,
-    tecnicas,
     departamentos,
   }
 }

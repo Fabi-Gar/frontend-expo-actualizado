@@ -12,7 +12,6 @@ import {
   TextInput,
   Text,
   ActivityIndicator,
-  Portal,
   Modal,
   Button,
   HelperText,
@@ -280,101 +279,97 @@ export default function DepartamentosIndex() {
       )}
 
       {/* ===== Modal crear/editar departamento ===== */}
-      <Portal>
-        <Modal
-          visible={deptModalVisible}
-          onDismiss={() => setDeptModalVisible(false)}
-          contentContainerStyle={styles.modalCard}
-        >
-          <Text style={styles.modalTitle}>{editingDept ? 'Editar departamento' : 'Nuevo departamento'}</Text>
+      <Modal
+        visible={deptModalVisible}
+        onDismiss={() => setDeptModalVisible(false)}
+        contentContainerStyle={styles.modalCard}
+      >
+        <Text style={styles.modalTitle}>{editingDept ? 'Editar departamento' : 'Nuevo departamento'}</Text>
 
-          <TextInput
-            label="Nombre"
-            mode="outlined"
-            value={formDeptNombre}
-            onChangeText={setFormDeptNombre}
-            style={styles.input}
-          />
-          <HelperText type="info" visible>
-            Ejemplo: Huehuetenango, Alta Verapaz…
-          </HelperText>
+        <TextInput
+          label="Nombre"
+          mode="outlined"
+          value={formDeptNombre}
+          onChangeText={setFormDeptNombre}
+          style={styles.input}
+        />
+        <HelperText type="info" visible>
+          Ejemplo: Huehuetenango, Alta Verapaz…
+        </HelperText>
 
-          <View style={styles.actions}>
-            <Button onPress={() => setDeptModalVisible(false)}>Cancelar</Button>
-            <Button mode="contained" onPress={saveDept} loading={loading} disabled={loading}>
-              {editingDept ? 'Actualizar' : 'Crear'}
-            </Button>
-          </View>
-        </Modal>
-      </Portal>
+        <View style={styles.actions}>
+          <Button onPress={() => setDeptModalVisible(false)}>Cancelar</Button>
+          <Button mode="contained" onPress={saveDept} loading={loading} disabled={loading}>
+            {editingDept ? 'Actualizar' : 'Crear'}
+          </Button>
+        </View>
+      </Modal>
 
       {/* ===== Modal gestión de municipios ===== */}
-      <Portal>
-        <Modal
-          visible={muniModalVisible}
-          onDismiss={() => setMuniModalVisible(false)}
-          contentContainerStyle={[styles.modalCard, { maxHeight: '85%' }]}
-        >
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <Text style={styles.modalTitle}>
-              Municipios — {currentDepto?.nombre || ''}
-            </Text>
-            <IconButton icon="plus" onPress={startCreateMuni} />
-          </View>
+      <Modal
+        visible={muniModalVisible}
+        onDismiss={() => setMuniModalVisible(false)}
+        contentContainerStyle={[styles.modalCard, { maxHeight: '85%' }]}
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Text style={styles.modalTitle}>
+            Municipios — {currentDepto?.nombre || ''}
+          </Text>
+          <IconButton icon="plus" onPress={startCreateMuni} />
+        </View>
 
-          {/* Editor rápido municipio */}
-          {(editingMuni || formMuniNombre) && (
-            <>
-              <TextInput
-                ref={muniInputRef}
-                label={editingMuni ? 'Editar municipio' : 'Nuevo municipio'}
-                mode="outlined"
-                value={formMuniNombre}
-                onChangeText={setFormMuniNombre}
-                style={styles.input}
-              />
-              <View style={[styles.actions, { marginTop: 0 }]}>
-                <Button
-                  onPress={() => { setEditingMuni(null); setFormMuniNombre(''); }}
-                  disabled={muniLoading}
-                >
-                  Cancelar
-                </Button>
-                <Button mode="contained" onPress={saveMuni} loading={muniLoading} disabled={muniLoading}>
-                  {editingMuni ? 'Actualizar' : 'Agregar'}
-                </Button>
-              </View>
-              <Divider style={{ marginVertical: 8 }} />
-            </>
-          )}
-
-          {muniLoading && munis.length === 0 ? (
-            <View style={styles.center}>
-              <ActivityIndicator />
-              <Text style={{ marginTop: 8 }}>Cargando municipios…</Text>
-            </View>
-          ) : (
-            <FlatList
-              data={munis}
-              keyExtractor={(x) => String(x.id)}
-              ItemSeparatorComponent={() => <View style={styles.sep} />}
-              ListEmptyComponent={<View style={styles.center}><Text>No hay municipios</Text></View>}
-              renderItem={({ item }) => (
-                <View style={styles.muniRow}>
-                  <Text style={{ flex: 1, fontSize: 15 }}>{item.nombre}</Text>
-                  <IconButton icon="pencil-outline" onPress={() => startEditMuni(item)} />
-                  <IconButton icon="trash-can-outline" iconColor="#B00020" onPress={() => askDeleteMuni(item)} />
-                </View>
-              )}
-              contentContainerStyle={{ paddingBottom: 8 }}
+        {/* Editor rápido municipio */}
+        {(editingMuni || formMuniNombre) && (
+          <>
+            <TextInput
+              ref={muniInputRef}
+              label={editingMuni ? 'Editar municipio' : 'Nuevo municipio'}
+              mode="outlined"
+              value={formMuniNombre}
+              onChangeText={setFormMuniNombre}
+              style={styles.input}
             />
-          )}
+            <View style={[styles.actions, { marginTop: 0 }]}>
+              <Button
+                onPress={() => { setEditingMuni(null); setFormMuniNombre(''); }}
+                disabled={muniLoading}
+              >
+                Cancelar
+              </Button>
+              <Button mode="contained" onPress={saveMuni} loading={muniLoading} disabled={muniLoading}>
+                {editingMuni ? 'Actualizar' : 'Agregar'}
+              </Button>
+            </View>
+            <Divider style={{ marginVertical: 8 }} />
+          </>
+        )}
 
-          <View style={styles.actions}>
-            <Button onPress={() => setMuniModalVisible(false)}>Cerrar</Button>
+        {muniLoading && munis.length === 0 ? (
+          <View style={styles.center}>
+            <ActivityIndicator />
+            <Text style={{ marginTop: 8 }}>Cargando municipios…</Text>
           </View>
-        </Modal>
-      </Portal>
+        ) : (
+          <FlatList
+            data={munis}
+            keyExtractor={(x) => String(x.id)}
+            ItemSeparatorComponent={() => <View style={styles.sep} />}
+            ListEmptyComponent={<View style={styles.center}><Text>No hay municipios</Text></View>}
+            renderItem={({ item }) => (
+              <View style={styles.muniRow}>
+                <Text style={{ flex: 1, fontSize: 15 }}>{item.nombre}</Text>
+                <IconButton icon="pencil-outline" onPress={() => startEditMuni(item)} />
+                <IconButton icon="trash-can-outline" iconColor="#B00020" onPress={() => askDeleteMuni(item)} />
+              </View>
+            )}
+            contentContainerStyle={{ paddingBottom: 8 }}
+          />
+        )}
+
+        <View style={styles.actions}>
+          <Button onPress={() => setMuniModalVisible(false)}>Cerrar</Button>
+        </View>
+      </Modal>
     </View>
   );
 }
